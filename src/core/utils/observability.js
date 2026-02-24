@@ -1,108 +1,50 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import util from 'node:util';
-import { randomUUID } from 'node:crypto';
+import pino from 'pino';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
 
-const contextStorage = new AsyncLocalStorage();
+const asyncLocalStorage = new AsyncLocalStorage();
 
-const LEVELS = {
-    ERROR: { val: 50, color: '\x1b[31m' },
-    WARN:  { val: 40, color: '\x1b[33m' },
-    INFO:  { val: 30, color: '\x1b[36m' },
-    DEBUG: { val: 20, color: '\x1b[35m' },
-    TRACE: { val: 10, color: '\x1b[90m' }
-};
-
-const RESET_COLOR = '\x1b[0m';
-const GRAY_COLOR = '\x1b[90m';
-
-class Observability {
-    constructor() {
-        this.logDir = path.resolve('data/logs');
-        this.logFile = path.join(this.logDir, 'app.jsonl');
-        this.stream = null;
-        this._init();
+const transport = pino.transport({
+    target: 'pino-pretty',
+    options: {
+        colorize: true,
+        translateTime: 'SYS:standard',
+        ignore: 'pid,hostname'
     }
+});
 
-    _init() {
-        if (!fs.existsSync(this.logDir)) {
-            fs.mkdirSync(this.logDir, { recursive: true });
-        }
-        this.stream = fs.createWriteStream(this.logFile, { flags: 'a' });
-        process.on('exit', () => this.stream.end());
-    }
+const baseLogger = pino({ level: process.env.LOG_LEVEL || 'info' }, transport);
 
-    withCorrelation(context, callback) {
+const logger = {
+    info: (section, msg, data) => log('info', section, msg, data),
+    error: (section, msg, data) => log('error', section, msg, data),
+    warn: (section, msg, data) => log('warn', section, msg, data),
+    debug: (section, msg, data) => log('debug', section, msg, data),
+
+    withCorrelation: (context, fn) => {
         const store = {
             correlationId: context.correlationId || randomUUID(),
-            source: context.source || 'system',
-            startTime: Date.now(),
-            ...context
+            source: context.source || 'system'
         };
+        return asyncLocalStorage.run(store, fn);
+    }
+};
 
-        return contextStorage.run(store, callback);
+function log(level, section, msg, data = {}) {
+    const store = asyncLocalStorage.getStore();
+    const logData = {
+        section,
+        cid: store?.correlationId || null,
+        src: store?.source || 'core',
+        ...data
+    };
+
+    if (data.error instanceof Error) {
+        logData.stack = data.error.stack;
+        logData.error = data.error.message;
     }
 
-    getCorrelationId() {
-        const store = contextStorage.getStore();
-        return store?.correlationId || randomUUID();
-    }
-
-    info(section, message, meta = {}) { this._log('INFO', section, message, meta); }
-    warn(section, message, meta = {}) { this._log('WARN', section, message, meta); }
-    error(section, message, meta = {}) { this._log('ERROR', section, message, meta); }
-    debug(section, message, meta = {}) { this._log('DEBUG', section, message, meta); }
-
-    _log(levelName, section, message, meta) {
-        const timestamp = new Date().toISOString();
-        const store = contextStorage.getStore() || {};
-
-        const logData = {
-            ts: timestamp,
-            lvl: levelName,
-            sec: section,
-            cid: store.correlationId || meta.correlationId || null,
-            src: store.source || 'core',
-            msg: message,
-            ...meta
-        };
-
-        if (logData.error instanceof Error) {
-            logData.error = {
-                message: logData.error.message,
-                stack: logData.error.stack,
-                name: logData.error.name,
-                code: logData.error.code
-            };
-        }
-
-        if (this.stream && this.stream.writable) {
-            this.stream.write(JSON.stringify(logData) + '\n');
-        }
-
-        if (process.env.NODE_ENV !== 'production') {
-            this._printConsole(levelName, section, message, logData);
-        }
-    }
-
-    _printConsole(levelName, section, message, logData) {
-        const config = LEVELS[levelName];
-        const timeShort = new Date().toLocaleTimeString();
-        const cidShort = logData.cid ? logData.cid.slice(0, 8) : '--------';
-
-        let line = `${GRAY_COLOR}[${timeShort}]${RESET_COLOR} `;
-        line += `${config.color}${levelName.padEnd(5)}${RESET_COLOR} `;
-        line += `${GRAY_COLOR}[${section}]${RESET_COLOR} `;
-        line += `${GRAY_COLOR}<${cidShort}>${RESET_COLOR} `;
-        line += message;
-
-        const { ts, lvl, sec, cid, src, msg, ...rest } = logData;
-        if (Object.keys(rest).length > 0) {
-            line += `\n${GRAY_COLOR}${util.inspect(rest, { colors: true, depth: null, breakLength: Infinity })}${RESET_COLOR}`;
-        }
-    }
+    baseLogger[level](logData, msg);
 }
 
-const loggerInstance = new Observability();
-export default loggerInstance;
+export default logger;

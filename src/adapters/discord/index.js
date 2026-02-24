@@ -34,6 +34,13 @@ export default class DiscordAdapter extends BaseAdapter {
         if (this.client) await this.client.destroy();
     }
 
+    async health() {
+        return {
+            status: this.client?.isReady() ? 'connected' : 'disconnected',
+            ping: this.client?.ws?.ping
+        };
+    }
+
     async processEgress(envelope) {
         const { channelId } = envelope.head.dest;
         const channel = await this.client.channels.fetch(channelId).catch(() => null);

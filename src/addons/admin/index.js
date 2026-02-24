@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import * as Permissions from '../../core/permissions.js';
+import * as Permissions from '../../core/utils/permissions.js';
 import { createEnvelope } from '../../core/utils/umf.js';
 
 export default class AdminAddon {

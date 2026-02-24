@@ -14,7 +14,9 @@ const envSchema = z.object({
                            CDN_URL: z.string().url(),
                            DISCORD_TOKEN: z.string().optional(),
                            TELEGRAM_TOKEN: z.string().optional(),
+                           STOAT_TOKEN: z.string().optional(),
                            OPENAI_API_KEY: z.string().optional(),
+                           SIGNAL_PHONE: z.string().optional(),
 });
 
 const env = envSchema.parse(process.env);
@@ -45,7 +47,12 @@ export default {
     tokens: {
         discord: env.DISCORD_TOKEN,
         telegram: env.TELEGRAM_TOKEN,
-        openai: env.OPENAI_API_KEY
+        stoat: env.STOAT_TOKEN,
+        openai: env.OPENAI_API_KEY,
+        signal: {
+            phone: env.SIGNAL_PHONE,
+            mode: "json-rpc"
+        }
     },
     bot: {
         prefixes: [".", "/"]

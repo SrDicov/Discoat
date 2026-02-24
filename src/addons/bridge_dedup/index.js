@@ -4,7 +4,7 @@ export default class BridgeDedup {
     async init(ctx) {
         this.ctx = ctx;
         this.cache = new Map();
-        setInterval(() => this.cache.clear(), 300000);
+        this.cleanupInterval = setInterval(() => this.cache.clear(), 300000);
     }
 
     async start() {
@@ -19,5 +19,14 @@ export default class BridgeDedup {
             }
             this.cache.set(hash, Date.now());
         });
+    }
+
+    async stop() {
+        if (this.cleanupInterval) clearInterval(this.cleanupInterval);
+        this.cache.clear();
+    }
+
+    async health() {
+        return { status: 'active', cacheSize: this.cache.size };
     }
 }

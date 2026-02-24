@@ -2,6 +2,7 @@ import { makeWASocket, useMultiFileAuthState, DisconnectReason } from '@whiskeys
 import BaseAdapter from '../base.js';
 import { createEnvelope, UMF_TYPES } from '../../core/utils/umf.js';
 import path from 'node:path';
+import process from 'node:process';
 
 export default class WhatsAppAdapter extends BaseAdapter {
     constructor() {
@@ -11,25 +12,37 @@ export default class WhatsAppAdapter extends BaseAdapter {
     }
 
     async start() {
-        const authPath = path.resolve(this.context.config.infra.storage.path, 'auth_whatsapp');
+        const authPath = path.resolve(process.cwd(), 'data', 'auth_whatsapp');
+        this.logger.info('adapter:whatsapp', `Guardando sesión en ${authPath}`);
+
         const { state, saveCreds } = await useMultiFileAuthState(authPath);
 
         this.sock = makeWASocket({
             auth: state,
-            printQRInTerminal: true,
-            browser: ['OpenChat', 'Chrome', '1.0.0'],
-            syncFullHistory: false
+            printQRInTerminal: false,
+            browser: ['OpenChat', 'Linux', '2.0.0'],
+            syncFullHistory: false,
+            connectTimeoutMs: 60000,
         });
 
         this.sock.ev.on('creds.update', saveCreds);
 
         this.sock.ev.on('connection.update', (update) => {
-            const { connection, lastDisconnect } = update;
+            const { connection, lastDisconnect, qr } = update;
+
+            if (qr) {
+                this.logger.info('adapter:whatsapp', '⚠️ ESCANEA ESTE QR PARA CONECTAR WHATSAPP:');
+                console.log(qr);
+            }
+
             if (connection === 'close') {
                 const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
-                if (shouldReconnect) this.start();
+                this.logger.warn('adapter:whatsapp', `Desconectado. Reconectando: ${shouldReconnect}`);
+                if (shouldReconnect) {
+                    setTimeout(() => this.start(), 3000);
+                }
             } else if (connection === 'open') {
-                this.logger.info('Conexión establecida.');
+                this.logger.info('adapter:whatsapp', '¡Conexión establecida!');
             }
         });
 
@@ -38,6 +51,10 @@ export default class WhatsAppAdapter extends BaseAdapter {
 
     async stop() {
         if (this.sock) this.sock.end(undefined);
+    }
+
+    async health() {
+        return { status: this.sock ? 'active' : 'inactive' };
     }
 
     getRateLimitConfig() {
@@ -50,7 +67,6 @@ export default class WhatsAppAdapter extends BaseAdapter {
         const body = envelope.body;
 
         let text = `*${source.username}*: ${body.text}`;
-
         await this.sock.sendPresenceUpdate('composing', targetJid);
 
         if (body.attachments.length > 0) {
@@ -70,14 +86,11 @@ export default class WhatsAppAdapter extends BaseAdapter {
 
     _handleIngress({ messages, type }) {
         if (type !== 'notify') return;
-
         messages.forEach(msg => {
             if (msg.key.fromMe) return;
-
             this.context.logger.withCorrelation({ source: 'whatsapp' }, async () => {
                 try {
                     const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
-
                     const envelope = createEnvelope({
                         type: UMF_TYPES.TEXT,
                         source: {
@@ -88,10 +101,9 @@ export default class WhatsAppAdapter extends BaseAdapter {
                         },
                         body: { text }
                     });
-
                     this.context.bus.emit('message.ingress', envelope);
                 } catch (e) {
-                    this.logger.error('Error ingress', { error: e });
+                    this.logger.error('adapter:whatsapp', 'Error ingress', { error: e });
                 }
             });
         });
