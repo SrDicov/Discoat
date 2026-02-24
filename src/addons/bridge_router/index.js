@@ -18,16 +18,16 @@ export default class UniversalRouter {
 
         const targets = await this.ctx.db.getBridgeTopology(link.bridge_id);
 
-        for (const target of targets) {
-            if (target.platform === umf.head.source.platform && target.native_id === umf.head.source.channelId) continue;
+        const promises = targets.map(async (target) => {
+            if (target.platform === umf.head.source.platform && target.native_id === umf.head.source.channelId) return;
 
-            const outbox = JSON.parse(JSON.stringify(umf));
+            const outbox = structuredClone(umf);
             outbox.head.dest = { platform: target.platform, channelId: target.native_id };
 
-            await this.ctx.bus.emit(`bridge.transform.${target.platform}`, outbox);
-
             await this.ctx.queue.add(`queue:${target.platform}:out`, outbox);
-        }
+        });
+
+        await Promise.allSettled(promises);
     }
 
     async stop() {}

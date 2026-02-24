@@ -1,4 +1,5 @@
 import process from 'node:process';
+import http from 'node:http';
 import ConfigLoader from '../../config/main.js';
 import Logger from './utils/observability.js';
 import MessageBus from './infra/message_bus.js';
@@ -32,6 +33,8 @@ export class Kernel {
                 timestamp: Date.now(),
                                   uptime: 0
             });
+
+            this._startHealthServer();
 
             Logger.info('Kernel', `Sistema operativo. Iniciado en ${(Date.now() - this.startTime)}ms.`);
             this._bindSignalHandlers();
@@ -73,6 +76,29 @@ export class Kernel {
         await this.pluginManager.startAll();
     }
 
+    _startHealthServer() {
+        const port = process.env.PORT || 3000;
+
+        this.healthServer = http.createServer((req, res) => {
+            if (req.url === '/health') {
+                const status = this.context.db ? 200 : 503;
+                res.writeHead(status, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    status: status === 200 ? 'ok' : 'error',
+                    uptime: process.uptime(),
+                                       nodeId: this.context.config.system.nodeId
+                }));
+            } else {
+                res.writeHead(404);
+                res.end();
+            }
+        });
+
+        this.healthServer.listen(port, () => {
+            Logger.info('Kernel', `Healthcheck server escuchando en puerto ${port}`);
+        });
+    }
+
     _bindSignalHandlers() {
         ['SIGINT', 'SIGTERM'].forEach(sig => {
             process.on(sig, () => this.shutdown(sig));
@@ -89,6 +115,10 @@ export class Kernel {
             if (this.context.bus) this.context.bus.emit('system.shutdown', { signal });
             if (this.pluginManager) await this.pluginManager.stopAll();
             if (this.context.db) await this.context.db.disconnect();
+
+            if (this.healthServer) {
+                await new Promise(resolve => this.healthServer.close(resolve));
+            }
 
             Logger.info('Kernel', 'Apagado limpio completado.');
             process.exit(0);

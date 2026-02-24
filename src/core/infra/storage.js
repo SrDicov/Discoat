@@ -1,82 +1,96 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { pipeline } from 'node:stream/promises';
-import { createWriteStream, createReadStream } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { S3Client } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
 import axios from 'axios';
 import sharp from 'sharp';
+import { randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 
 export default class StorageService {
     constructor(context) {
         this.config = context.config;
         this.logger = context.logger;
-        this.storagePath = path.resolve('data/storage');
-        this.publicBaseUrl = this.config.public_url || 'http://localhost:3000/files';
+        this.bucket = process.env.S3_BUCKET;
+        this.s3 = new S3Client({
+            region: process.env.S3_REGION || 'us-east-1',
+            credentials: {
+                accessKeyId: process.env.S3_ACCESS_KEY,
+                secretAccessKey: process.env.S3_SECRET_KEY
+            },
+            endpoint: process.env.S3_ENDPOINT
+        });
     }
 
     async init() {
-        if (!fs.existsSync(this.storagePath)) {
-            fs.mkdirSync(this.storagePath, { recursive: true });
-        }
+        this.logger?.info('Storage', 'Iniciado driver S3');
     }
 
     async storeFromUrl(url, options = {}) {
         const fileId = randomUUID();
-        const traceId = this.logger.getCorrelationId();
 
-        try {
-            const response = await axios({
-                method: 'get',
-                url: url,
-                responseType: 'stream',
-                timeout: 20000
-            });
+        const response = await axios({
+            method: 'get',
+            url: url,
+            responseType: 'stream',
+            timeout: 20000
+        });
 
-            let extension = this._getExtensionFromMime(response.headers['content-type']);
-            let transformStream = null;
+        let extension = this._getExtensionFromMime(response.headers['content-type']);
+        let contentType = response.headers['content-type'];
+        let bodyStream = response.data;
 
-            if (options.type === 'image' || options.type === 'sticker') {
-                transformStream = this._createImagePipeline(options);
-                if (transformStream) extension = options.optimizeFor === 'wa' ? 'webp' : 'png';
+        if (options.type === 'image' || options.type === 'sticker') {
+            const transformer = this._createImagePipeline(options);
+            if (transformer) {
+                bodyStream = response.data.pipe(transformer);
+                extension = options.optimizeFor === 'wa' ? 'webp' : 'png';
+                contentType = this._getMimeFromExtension(extension);
             }
-
-            const fileName = `${fileId}.${extension}`;
-            const filePath = path.join(this.storagePath, fileName);
-            const writeStream = createWriteStream(filePath);
-
-            const streams = [response.data];
-            if (transformStream) streams.push(transformStream);
-            streams.push(writeStream);
-
-            await pipeline(...streams);
-
-            const stat = await fs.promises.stat(filePath);
-
-            return {
-                id: fileId,
-                url: `${this.publicBaseUrl}/${fileName}`,
-                localPath: filePath,
-                mime_type: this._getMimeFromExtension(extension),
-                size: stat.size,
-                filename: fileName
-            };
-
-        } catch (error) {
-            throw error;
         }
+
+        const key = `media/${fileId}.${extension}`;
+
+        const upload = new Upload({
+            client: this.s3,
+            params: {
+                Bucket: this.bucket,
+                Key: key,
+                Body: bodyStream,
+                ContentType: contentType
+            }
+        });
+
+        await upload.done();
+
+        let size = 0;
+        try {
+            const head = await this.s3.headObject({ Bucket: this.bucket, Key: key });
+            size = head.ContentLength;
+        } catch (e) {}
+
+        return {
+            id: fileId,
+            url: `${process.env.CDN_URL || process.env.S3_PUBLIC_URL}/${key}`,
+            mime_type: contentType,
+            size: size,
+            filename: key.split('/').pop()
+        };
     }
 
-    getStream(fileName) {
-        const filePath = path.join(this.storagePath, fileName);
-        if (!fs.existsSync(filePath)) return null;
-        return createReadStream(filePath);
+    async getStream(fileName) {
+        const key = `media/${fileName}`;
+        try {
+            const { Body } = await this.s3.getObject({ Bucket: this.bucket, Key: key });
+            return Body instanceof Readable ? Body : Readable.from(Body);
+        } catch (e) {
+            return null;
+        }
     }
 
     async delete(fileName) {
+        const key = `media/${fileName}`;
         try {
-            await fs.promises.unlink(path.join(this.storagePath, fileName));
-        } catch (e) {
-        }
+            await this.s3.deleteObject({ Bucket: this.bucket, Key: key });
+        } catch (e) {}
     }
 
     _createImagePipeline(options) {

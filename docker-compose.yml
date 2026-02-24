@@ -1,0 +1,61 @@
+services:
+  core:
+    build: .
+    container_name: openchat_core
+    restart: always
+    ports:
+      - "3000:3000"
+    env_file: .env
+    depends_on:
+      - db
+      - redis
+      - minio
+    networks:
+      - openchat_net
+
+  db:
+    image: postgres:15-alpine
+    container_name: openchat_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: openchat_v2
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - openchat_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: openchat_redis
+    restart: always
+    volumes:
+      - redis_data:/data
+    networks:
+      - openchat_net
+
+  minio:
+    image: minio/minio
+    container_name: openchat_s3
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    ports:
+      - "9000:9000" # API S3
+      - "9001:9001" # Consola Web MinIO
+    volumes:
+      - minio_data:/data
+    networks:
+      - openchat_net
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+
+networks:
+  openchat_net:
+    driver: bridge
