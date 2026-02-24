@@ -1,0 +1,21 @@
+{
+  "roles": {
+    "owner": [
+      { "platform": "*", "id": "MASTER_ADMIN_ID", "name": "Super Admin Global" },
+      { "platform": "wa", "id": "584144015349", "name": "Dicov WA" },
+      { "platform": "dc", "id": "655473556251213854", "name": "Dicov DC" }
+    ],
+    "admin": [
+      { "platform": "tg", "id": "123456789", "name": "Moderador Jefe" }
+    ],
+    "mod": []
+  },
+  "settings": {
+    "strict_mode": true,
+    "default_role": 0
+  },
+  "_meta": {
+    "levels": { "owner": 3, "admin": 2, "mod": 1, "user": 0 },
+    "wildcards": "El simbolo '*' en platform aplica a todas las redes."
+  }
+}

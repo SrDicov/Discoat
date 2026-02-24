@@ -1,0 +1,37 @@
+{
+  "name": "openchat-core",
+  "version": "2.1.0",
+  "description": "Microkernel de Interconexión Omnicanal (OpenChat v2)",
+  "main": "index.js",
+  "type": "module",
+  "engines": {
+    "node": ">=20.10.0"
+  },
+  "scripts": {
+    "start": "node --env-file=.env index.js",
+    "dev": "node --watch --env-file=.env index.js",
+    "lint": "eslint src/**/*.js",
+    "clean": "rm -rf data/temp_media/* logs/*"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.0",
+    "axios": "^1.13.5",
+    "better-sqlite3": "^11.5.0",
+    "bullmq": "^5.21.0",
+    "discord.js": "^14.16.0",
+    "dotenv": "^16.6.1",
+    "grammy": "^1.30.0",
+    "ioredis": "^5.4.1",
+    "luxon": "^3.5.0",
+    "openai": "^6.24.0",
+    "pino": "^9.4.0",
+    "pino-pretty": "^11.2.0",
+    "sharp": "^0.33.5",
+    "zod": "^3.23.0",
+    "stoat.js": "github:stoatchat/javascript-client-sdk"
+  },
+  "devDependencies": {
+    "eslint": "^9.12.0",
+    "prettier": "^3.3.0"
+  }
+}
