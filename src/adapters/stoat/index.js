@@ -20,7 +20,22 @@ export default class StoatAdapter extends BaseAdapter {
     }
 
     async stop() {
-        if (this.client) this.client.disconnect();
+        if (this.client) {
+            if (typeof this.client.disconnect === 'function') {
+                this.client.disconnect();
+            } else if (typeof this.client.destroy === 'function') {
+                this.client.destroy();
+            }
+            this.client = null;
+        }
+    }
+
+    async health() {
+        return {
+            status: this.client ? 'active' : 'inactive',
+            platform: this.platformName,
+            timestamp: Date.now()
+        };
     }
 
     async processEgress(envelope) {
@@ -44,7 +59,7 @@ export default class StoatAdapter extends BaseAdapter {
     async _handleIngress(msg) {
         if (msg.author.bot || msg.masquerade) return;
 
-        this.context.logger.withCorrelation({ source: 'stoat' }, async () => {
+        await this.logger.withCorrelation({ source: 'stoat' }, async () => {
             const envelope = createEnvelope({
                 type: UMF_TYPES.TEXT,
                 source: {

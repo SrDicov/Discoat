@@ -1,124 +1,110 @@
-import pg from 'pg';
+import Database from 'better-sqlite3';
+import path from 'path';
+import fs from 'fs';
 
 export default class Repository {
-    constructor(config) {
-        this.config = config;
-        this.pool = new pg.Pool({
-            connectionString: process.env.DATABASE_URL,
-            ssl: process.env.DB_SSL ? { rejectUnauthorized: false } : false
-        });
+    constructor() {
+        this.db = null;
+        this.context = null;
+    }
+
+    async init(context) {
+        this.context = context;
     }
 
     async connect() {
-        await this.pool.query('SELECT 1');
-        await this._initSchema();
+        try {
+            const dataDir = path.resolve('data');
+            if (!fs.existsSync(dataDir)) {
+                fs.mkdirSync(dataDir, { recursive: true });
+            }
+
+            const dbPath = path.join(dataDir, 'core.db');
+            this.context.logger.info({ section: 'infra:repo', path: dbPath }, 'Conectando a SQLite local...');
+
+            this.db = new Database(dbPath);
+            this.db.pragma('journal_mode = WAL');
+
+            this._initializeSchema();
+
+            this.context.logger.info({ section: 'infra:repo' }, 'Base de datos SQLite conectada y esquema verificado.');
+        } catch (error) {
+            this.context.logger.error({ section: 'infra:repo', err: error }, 'Fallo crítico conectando a SQLite');
+            throw error;
+        }
     }
 
     async disconnect() {
-        await this.pool.end();
+        if (this.db) {
+            this.context.logger.info({ section: 'infra:repo' }, 'Cerrando conexión SQLite...');
+            this.db.close();
+            this.db = null;
+        }
     }
 
-    async _initSchema() {
-        await this.pool.query(`
+    _initializeSchema() {
+        this.db.prepare(`
         CREATE TABLE IF NOT EXISTS bridges (
             id TEXT PRIMARY KEY,
-            name TEXT,
+            name TEXT NOT NULL,
             status TEXT DEFAULT 'active',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at INTEGER,
+            meta JSON
         )
-        `);
+        `).run();
 
-        await this.pool.query(`
+        this.db.prepare(`
         CREATE TABLE IF NOT EXISTS channels (
             id TEXT PRIMARY KEY,
+            bridge_id TEXT NOT NULL,
             platform TEXT NOT NULL,
-            native_id TEXT NOT NULL,
-            bridge_id TEXT REFERENCES bridges(id) ON DELETE SET NULL,
-                                             config JSONB
+            identifier TEXT NOT NULL,
+            config JSON,
+            FOREIGN KEY(bridge_id) REFERENCES bridges(id) ON DELETE CASCADE
         )
-        `);
+        `).run();
 
-        await this.pool.query('CREATE INDEX IF NOT EXISTS idx_channels_bridge ON channels(bridge_id)');
-        await this.pool.query('CREATE INDEX IF NOT EXISTS idx_channels_native ON channels(platform, native_id)');
-
-        await this.pool.query(`
-        CREATE TABLE IF NOT EXISTS kv_store (
-            key TEXT PRIMARY KEY,
-            value JSONB
-        )
-        `);
+        this.db.prepare(`CREATE INDEX IF NOT EXISTS idx_channels_bridge ON channels(bridge_id)`).run();
+        this.db.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_platform ON channels(platform, identifier)`).run();
     }
 
-    async getBridgeTopology(bridgeId) {
-        const { rows } = await this.pool.query(`
-        SELECT id, platform, native_id, config
-        FROM channels
-        WHERE bridge_id = $1
-        `, [bridgeId]);
+    getBridgeTopology(bridgeId) {
+        const bridge = this.db.prepare('SELECT * FROM bridges WHERE id = ?').get(bridgeId);
+        if (!bridge) return null;
 
-        return rows.map(row => ({
-            ...row,
-            config: row.config || {}
-        }));
-    }
+        const channels = this.db.prepare('SELECT * FROM channels WHERE bridge_id = ?').all(bridgeId);
 
-    async getChannelLink(platform, nativeId) {
-        const id = `${platform}:${nativeId}`;
-        const { rows } = await this.pool.query(
-            'SELECT bridge_id, config FROM channels WHERE id = $1',
-            [id]
-        );
-
-        if (rows.length === 0) return null;
         return {
-            bridge_id: rows[0].bridge_id,
-            config: rows[0].config || {}
+            ...bridge,
+            channels: channels.map(c => ({
+                ...c,
+                config: c.config ? JSON.parse(c.config) : {}
+            }))
         };
     }
 
-    async linkChannelToBridge(bridgeId, platform, nativeId, config = {}) {
-        const id = `${platform}:${nativeId}`;
-        await this.pool.query(`
-        INSERT INTO channels (id, platform, native_id, bridge_id, config)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (id) DO UPDATE SET
-        bridge_id = EXCLUDED.bridge_id,
-        config = EXCLUDED.config
-        `, [id, platform, nativeId, bridgeId, JSON.stringify(config)]);
+    getAllActiveBridges() {
+        return this.db.prepare("SELECT id FROM bridges WHERE status = 'active'").all();
     }
 
-    async unlinkChannel(platform, nativeId) {
-        const id = `${platform}:${nativeId}`;
-        await this.pool.query('DELETE FROM channels WHERE id = $1', [id]);
+    findBridgeByChannel(platform, identifier) {
+        const channel = this.db.prepare(
+            'SELECT bridge_id FROM channels WHERE platform = ? AND identifier = ?'
+        ).get(platform, identifier);
+
+        return channel ? channel.bridge_id : null;
     }
 
-    async createBridge(id, name) {
-        await this.pool.query(
-            'INSERT INTO bridges (id, name) VALUES ($1, $2)',
-                              [id, name]
-        );
+    createBridge(id, name) {
+        this.db.prepare(
+            'INSERT INTO bridges (id, name, status, created_at) VALUES (?, ?, ?, ?)'
+        ).run(id, name, 'active', Date.now());
     }
 
-    async getBridge(id) {
-        const { rows } = await this.pool.query(
-            'SELECT * FROM bridges WHERE id = $1',
-            [id]
-        );
-        return rows[0] || null;
-    }
-
-    async getKV(key) {
-        const { rows } = await this.pool.query(
-            'SELECT value FROM kv_store WHERE key = $1',
-            [key]
-        );
-        return rows.length ? rows[0].value : null;
-    }
-
-    async setKV(key, value) {
-        await this.pool.query(`
-        INSERT INTO kv_store (key, value) VALUES ($1, $2)
-        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-        `, [key, JSON.stringify(value)]);
+    addChannelToBridge(bridgeId, platform, identifier, config = {}) {
+        const id = `${platform}_${identifier}`;
+        this.db.prepare(
+            'INSERT INTO channels (id, bridge_id, platform, identifier, config) VALUES (?, ?, ?, ?, ?)'
+        ).run(id, bridgeId, platform, identifier, JSON.stringify(config));
     }
 }

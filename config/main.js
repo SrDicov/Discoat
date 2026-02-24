@@ -4,8 +4,10 @@ import { z } from 'zod';
 const envSchema = z.object({
     NODE_ENV: z.enum(['development', 'production', 'test']).default('production'),
                            NODE_ID: z.string().default('core-01'),
+                           PORT: z.string().transform(Number).default('3000'),
+                           PUBLIC_URL: z.string().url().default('http://localhost:3000'),
                            DATABASE_URL: z.string().url({ message: "Postgres URL requerida" }),
-                           REDIS_URL: z.string().url({ message: "Redis URL requerida" }),
+                           REDIS_URL: z.string().url().default('redis://127.0.0.1:6379'),
                            S3_BUCKET: z.string(),
                            S3_REGION: z.string().default('us-east-1'),
                            S3_ACCESS_KEY: z.string(),
@@ -27,34 +29,36 @@ export default {
         nodeId: env.NODE_ID,
         logLevel: env.NODE_ENV === 'production' ? 'info' : 'debug'
     },
-    database: {
-        url: env.DATABASE_URL,
-        ssl: env.NODE_ENV === 'production'
-    },
-    redis: {
-        url: env.REDIS_URL
-    },
-    storage: {
-        bucket: env.S3_BUCKET,
-        region: env.S3_REGION,
-        credentials: {
-            accessKeyId: env.S3_ACCESS_KEY,
-            secretAccessKey: env.S3_SECRET_KEY
+    port: env.PORT,
+    public_url: env.PUBLIC_URL,
+        database: {
+            url: env.DATABASE_URL,
+            ssl: env.NODE_ENV === 'production'
         },
-        endpoint: env.S3_ENDPOINT,
-        cdnUrl: env.CDN_URL
-    },
-    tokens: {
-        discord: env.DISCORD_TOKEN,
-        telegram: env.TELEGRAM_TOKEN,
-        stoat: env.STOAT_TOKEN,
-        openai: env.OPENAI_API_KEY,
-        signal: {
-            phone: env.SIGNAL_PHONE,
-            mode: "json-rpc"
+        redis: {
+            url: env.REDIS_URL
+        },
+        storage: {
+            bucket: env.S3_BUCKET,
+            region: env.S3_REGION,
+            credentials: {
+                accessKeyId: env.S3_ACCESS_KEY,
+                secretAccessKey: env.S3_SECRET_KEY
+            },
+            endpoint: env.S3_ENDPOINT,
+            cdnUrl: env.CDN_URL
+        },
+        tokens: {
+            discord: env.DISCORD_TOKEN,
+            telegram: env.TELEGRAM_TOKEN,
+            stoat: env.STOAT_TOKEN,
+            openai: env.OPENAI_API_KEY,
+            signal: {
+                phone: env.SIGNAL_PHONE,
+                mode: "json-rpc"
+            }
+        },
+        bot: {
+            prefixes: [".", "/"]
         }
-    },
-    bot: {
-        prefixes: [".", "/"]
-    }
 };

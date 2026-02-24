@@ -9,18 +9,42 @@ export default class QueueService {
 
         this.queues = new Map();
         this.workers = new Map();
-
-        this.redisConnection = new IORedis(this.config.redis?.url || 'redis://localhost:6379', {
-            maxRetriesPerRequest: null,
-            enableReadyCheck: false
-        });
+        this.redisConnection = null;
     }
 
     async init() {
+        const redisUrl = this.config.redis?.url || 'redis://127.0.0.1:6379';
+        const safeUrl = redisUrl.replace(/:([^@]+)@/, ':***@');
+
+        this.logger.info({ section: 'infra:queue', url: safeUrl }, 'Conectando a Redis...');
+
+        this.redisConnection = new IORedis(redisUrl, {
+            maxRetriesPerRequest: null,
+            enableReadyCheck: false,
+            lazyConnect: true,
+            retryStrategy(times) {
+                const delay = Math.min(times * 50, 2000);
+                return delay;
+            }
+        });
+
+        this.redisConnection.on('error', (err) => {
+            this.logger.warn({ section: 'infra:queue', error: err.message }, 'Evento de error en Redis (no crítico)');
+        });
+
         try {
+            await this.redisConnection.connect();
             await this.redisConnection.ping();
+            this.logger.info({ section: 'infra:queue' }, 'Redis conectado y listo.');
         } catch (error) {
-            throw error;
+            if (error.message.includes('ENOTFOUND')) {
+                this.logger.error({ section: 'infra:queue' }, '❌ ERROR DNS REDIS: El host no existe.');
+                this.logger.error({ section: 'infra:queue' }, '💡 SOLUCIÓN: Verifica config/main.js o tu .env. Si estás en local, usa "127.0.0.1". Si estás en Docker, usa el nombre del servicio.');
+            } else if (error.message.includes('ECONNREFUSED')) {
+                this.logger.error({ section: 'infra:queue' }, '❌ ERROR CONEXIÓN REDIS: Conexión rechazada.');
+                this.logger.error({ section: 'infra:queue' }, '💡 SOLUCIÓN: ¿Está corriendo el servidor de Redis? (sudo service redis-server start)');
+            }
+            throw new Error(`Fallo crítico Redis: ${error.message}`);
         }
     }
 
@@ -29,71 +53,61 @@ export default class QueueService {
 
         const defaultOptions = {
             attempts: 3,
-            backoff: {
-                type: 'exponential',
-                delay: 1000
-            },
+            backoff: { type: 'exponential', delay: 1000 },
             removeOnComplete: 100,
             removeOnFail: 500
         };
 
-        const jobOptions = { ...defaultOptions, ...options };
-
-        try {
-            const job = await queue.add('process', data, jobOptions);
-            return job;
-        } catch (error) {
-            throw error;
-        }
+        return await queue.add('process', data, { ...defaultOptions, ...options });
     }
 
     process(queueName, processorFn, limitOptions = null) {
-        if (this.workers.has(queueName)) {
-            return;
-        }
+        if (this.workers.has(queueName)) return;
 
         const workerOptions = {
             connection: this.redisConnection,
-            concurrency: limitOptions ? 1 : 5,
-            limiter: limitOptions ? {
-                max: limitOptions.max,
-                duration: limitOptions.duration
+            concurrency: limitOptions?.concurrency || 5,
+            limiter: limitOptions?.rateLimit ? {
+                max: limitOptions.rateLimit.max,
+                duration: limitOptions.rateLimit.duration
             } : undefined
         };
 
         const worker = new Worker(queueName, async (job) => {
-            const traceId = job.data?.head?.correlationId || 'no-trace';
+            const traceId = job.data?.head?.correlationId || `job-${job.id}`;
 
-            return this.context.logger.withCorrelation({ correlationId: traceId, source: 'worker' }, async () => {
+            return this.logger.withCorrelation({ correlationId: traceId, source: `worker:${queueName}` }, async () => {
                 try {
                     await processorFn(job.data);
                 } catch (err) {
+                    this.logger.error({ section: 'infra:queue', error: err.message }, `Error procesando job en ${queueName}`);
                     throw err;
                 }
             });
         }, workerOptions);
 
         worker.on('failed', (job, err) => {
+            this.logger.warn({ section: 'infra:queue', jobId: job.id, error: err.message }, `Job falló en ${queueName}`);
         });
 
         this.workers.set(queueName, worker);
     }
 
     async stop() {
+        this.logger.info({ section: 'infra:queue' }, 'Deteniendo colas y workers...');
         const closePromises = [];
 
-        for (const [name, worker] of this.workers) {
-            closePromises.push(worker.close());
-        }
-
-        for (const [name, queue] of this.queues) {
-            closePromises.push(queue.close());
-        }
+        for (const worker of this.workers.values()) closePromises.push(worker.close());
+        for (const queue of this.queues.values()) closePromises.push(queue.close());
 
         await Promise.allSettled(closePromises);
 
         if (this.redisConnection) {
-            await this.redisConnection.quit();
+            try {
+                await this.redisConnection.quit();
+            } catch (e) {
+                // ignore
+            }
         }
     }
 

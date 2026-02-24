@@ -1,11 +1,11 @@
 import process from 'node:process';
-import http from 'node:http';
 import ConfigLoader from '../../config/main.js';
 import Logger from './utils/observability.js';
 import MessageBus from './infra/message_bus.js';
 import Repository from './infra/repository.js';
 import PluginLoader from './plugin_loader.js';
-
+import QueueService from './infra/queue.js';
+import StorageService from './infra/storage.js';
 export class Kernel {
     constructor() {
         this.startTime = Date.now();
@@ -16,6 +16,8 @@ export class Kernel {
             logger: Logger,
             bus: null,
             db: null,
+            queue: null,
+            storage: null,
             services: {},
             kernel: this
         };
@@ -34,9 +36,8 @@ export class Kernel {
                                   uptime: 0
             });
 
-            this._startHealthServer();
-
             Logger.info('Kernel', `Sistema operativo. Iniciado en ${(Date.now() - this.startTime)}ms.`);
+
             this._bindSignalHandlers();
 
         } catch (error) {
@@ -50,17 +51,19 @@ export class Kernel {
         Logger.debug('Kernel', 'Cargando infraestructura base...');
 
         this.context.config = ConfigLoader;
+        if (!this.context.config) throw new Error('No se pudo cargar la configuración.');
 
-        if (!this.context.config) {
-            throw new Error('La configuración maestra está vacía o es inválida.');
-        }
+        this.context.bus = new MessageBus();
 
-        this.context.bus = new MessageBus(this.context.config);
-        await this.context.bus.init();
-
-        this.context.db = new Repository(this.context.config);
+        this.context.db = new Repository();
+        await this.context.db.init(this.context);
         await this.context.db.connect();
 
+        this.context.queue = new QueueService(this.context);
+        await this.context.queue.init();
+
+        this.context.storage = new StorageService(this.context);
+        await this.context.storage.init();
         Logger.info('Kernel', 'Infraestructura base inicializada correctamente.');
     }
 
@@ -74,29 +77,6 @@ export class Kernel {
         this.pluginManager = loader;
 
         await this.pluginManager.startAll();
-    }
-
-    _startHealthServer() {
-        const port = process.env.PORT || 3000;
-
-        this.healthServer = http.createServer((req, res) => {
-            if (req.url === '/health') {
-                const status = this.context.db ? 200 : 503;
-                res.writeHead(status, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
-                    status: status === 200 ? 'ok' : 'error',
-                    uptime: process.uptime(),
-                                       nodeId: this.context.config.system.nodeId
-                }));
-            } else {
-                res.writeHead(404);
-                res.end();
-            }
-        });
-
-        this.healthServer.listen(port, () => {
-            Logger.info('Kernel', `Healthcheck server escuchando en puerto ${port}`);
-        });
     }
 
     _bindSignalHandlers() {
@@ -113,11 +93,14 @@ export class Kernel {
 
         try {
             if (this.context.bus) this.context.bus.emit('system.shutdown', { signal });
-            if (this.pluginManager) await this.pluginManager.stopAll();
-            if (this.context.db) await this.context.db.disconnect();
 
-            if (this.healthServer) {
-                await new Promise(resolve => this.healthServer.close(resolve));
+            if (this.pluginManager) await this.pluginManager.stopAll();
+
+            if (this.context.queue) await this.context.queue.stop();
+
+            if (this.context.db) {
+                if (typeof this.context.db.disconnect === 'function') await this.context.db.disconnect();
+                else if (typeof this.context.db.close === 'function') this.context.db.close();
             }
 
             Logger.info('Kernel', 'Apagado limpio completado.');

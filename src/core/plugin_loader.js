@@ -47,31 +47,25 @@ export default class PluginLoader {
             const entries = await fs.readdir(directory, { withFileTypes: true });
 
             for (const entry of entries) {
-                if (!entry.isDirectory()) continue;
+                if (entry.isDirectory()) {
+                    const pluginName = entry.name;
+                    const pluginPath = path.join(directory, pluginName, 'index.js');
 
-                const pluginName = entry.name;
-                const entryPoint = path.join(directory, pluginName, 'index.js');
+                    try {
+                        const moduleUrl = pathToFileURL(pluginPath).href;
+                        const { default: PluginClass } = await import(moduleUrl);
 
-                try {
-                    await fs.access(entryPoint);
-                    const moduleUrl = pathToFileURL(entryPoint).href;
+                        this._validateInterface(pluginName, PluginClass);
 
-                    const Module = await import(moduleUrl);
-                    const PluginClass = Module.default;
+                        const pluginContext = this._createPluginContext(pluginName, type);
+                        const instance = new PluginClass();
 
-                    this._validateInterface(pluginName, PluginClass);
+                        await instance.init(pluginContext);
+                        this.plugins.set(`${type}:${pluginName}`, instance);
 
-                    const pluginContext = this._createPluginContext(pluginName, type);
-                    const instance = new PluginClass();
-
-                    await instance.init(pluginContext);
-                    this.plugins.set(pluginName, instance);
-                    this.context.logger.info('Loader', `Cargado: ${pluginName}`);
-
-                } catch (err) {
-                    if (err.code === 'ENOENT') {
-                    } else {
-                        this.context.logger.error('Loader', `Error cargando ${pluginName}`, { error: err.message, stack: err.stack });
+                        this.context.logger.debug('Loader', `Plugin cargado: ${pluginName} (${type})`);
+                    } catch (err) {
+                        this.context.logger.error('Loader', `Error cargando plugin ${pluginName}`, { error: err.message });
                     }
                 }
             }
@@ -86,6 +80,7 @@ export default class PluginLoader {
             error: (msg, meta = {}) => this.context.logger.error(`${type}:${name}`, msg, meta),
             warn: (msg, meta = {}) => this.context.logger.warn(`${type}:${name}`, msg, meta),
             debug: (msg, meta = {}) => this.context.logger.debug(`${type}:${name}`, msg, meta),
+            withCorrelation: (meta, fn) => this.context.logger.withCorrelation(meta, fn)
         };
 
         return {

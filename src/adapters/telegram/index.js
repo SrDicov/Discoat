@@ -19,10 +19,10 @@ export default class TelegramAdapter extends BaseAdapter {
         await this.bot.init();
 
         this.bot.on('message', (ctx) => this._handleIngress(ctx));
-        this.bot.catch((err) => this.logger.error('adapter:telegram', 'Polling Error', { error: err }));
+        this.bot.catch((err) => this.logger.error({ section: 'adapter:telegram', error: err }, 'Polling Error'));
 
         this.runner = run(this.bot);
-        this.logger.info('adapter:telegram', `Telegram Runner iniciado (@${this.bot.botInfo.username})`);
+        this.logger.info({ section: 'adapter:telegram', botInfo: this.bot.botInfo }, `Telegram Runner iniciado (@${this.bot.botInfo.username})`);
     }
 
     async stop() {
@@ -61,7 +61,7 @@ export default class TelegramAdapter extends BaseAdapter {
                 });
             }
         } catch (error) {
-            this.logger.error('adapter:telegram', 'Error enviando mensaje', { error });
+            this.logger.error({ section: 'adapter:telegram', error }, 'Error enviando mensaje');
         }
     }
 
@@ -79,7 +79,7 @@ export default class TelegramAdapter extends BaseAdapter {
                     const url = `https://api.telegram.org/file/bot${this.context.config.tokens.telegram}/${file.file_path}`;
                     attachments.push({ url, type: 'image' });
                 } catch (e) {
-                    this.logger.error('adapter:telegram', 'Error obteniendo archivo', { error: e });
+                    this.logger.error({ section: 'adapter:telegram', error: e }, 'Error obteniendo archivo');
                 }
             }
 
