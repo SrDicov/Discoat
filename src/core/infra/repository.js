@@ -1,10 +1,13 @@
+// src/core/infra/repository.js
+import fs from 'node:fs';
+import path from 'node:path';
 import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
 
 export default class Repository {
-    constructor() {
-        this.db = null;
+    constructor(config) {
+        this.config = config;
+        this.dbPath = path.resolve('data/core.db');
+        this.sqlite = null;
         this.context = null;
     }
 
@@ -13,98 +16,73 @@ export default class Repository {
     }
 
     async connect() {
-        try {
-            const dataDir = path.resolve('data');
-            if (!fs.existsSync(dataDir)) {
-                fs.mkdirSync(dataDir, { recursive: true });
-            }
+        const dataDir = path.dirname(this.dbPath);
+        if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-            const dbPath = path.join(dataDir, 'core.db');
-            this.context.logger.info({ section: 'infra:repo', path: dbPath }, 'Conectando a SQLite local...');
-
-            this.db = new Database(dbPath);
-            this.db.pragma('journal_mode = WAL');
-
-            this._initializeSchema();
-
-            this.context.logger.info({ section: 'infra:repo' }, 'Base de datos SQLite conectada y esquema verificado.');
-        } catch (error) {
-            this.context.logger.error({ section: 'infra:repo', err: error }, 'Fallo crítico conectando a SQLite');
-            throw error;
-        }
+        this.sqlite = new Database(this.dbPath);
+        this.sqlite.pragma('journal_mode = WAL');
+        this._initSchema();
     }
 
     async disconnect() {
-        if (this.db) {
-            this.context.logger.info({ section: 'infra:repo' }, 'Cerrando conexión SQLite...');
-            this.db.close();
-            this.db = null;
+        if (this.sqlite) {
+            this.sqlite.close();
+            this.sqlite = null;
         }
     }
 
-    _initializeSchema() {
-        this.db.prepare(`
+    close() { this.disconnect(); }
+
+    _initSchema() {
+        this.sqlite.exec(`
         CREATE TABLE IF NOT EXISTS bridges (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            status TEXT DEFAULT 'active',
-            created_at INTEGER,
-            meta JSON
+            id TEXT PRIMARY KEY, name TEXT, status TEXT DEFAULT 'active'
         )
-        `).run();
-
-        this.db.prepare(`
+        `);
+        this.sqlite.exec(`
         CREATE TABLE IF NOT EXISTS channels (
-            id TEXT PRIMARY KEY,
-            bridge_id TEXT NOT NULL,
-            platform TEXT NOT NULL,
-            identifier TEXT NOT NULL,
-            config JSON,
-            FOREIGN KEY(bridge_id) REFERENCES bridges(id) ON DELETE CASCADE
+            id TEXT PRIMARY KEY, platform TEXT, native_id TEXT, bridge_id TEXT, config TEXT
         )
-        `).run();
+        `);
+        this.sqlite.exec(`CREATE TABLE IF NOT EXISTS kv_store (key TEXT PRIMARY KEY, value TEXT)`);
+    }
 
-        this.db.prepare(`CREATE INDEX IF NOT EXISTS idx_channels_bridge ON channels(bridge_id)`).run();
-        this.db.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_platform ON channels(platform, identifier)`).run();
+    getChannelLink(platform, nativeId) {
+        if (!this.sqlite) throw new Error('DB no conectada');
+        const stmt = this.sqlite.prepare('SELECT bridge_id, config FROM channels WHERE id = ?');
+        const row = stmt.get(`${platform}:${nativeId}`);
+        return row ? { bridge_id: row.bridge_id, config: JSON.parse(row.config || '{}') } : null;
     }
 
     getBridgeTopology(bridgeId) {
-        const bridge = this.db.prepare('SELECT * FROM bridges WHERE id = ?').get(bridgeId);
-        if (!bridge) return null;
-
-        const channels = this.db.prepare('SELECT * FROM channels WHERE bridge_id = ?').all(bridgeId);
-
-        return {
-            ...bridge,
-            channels: channels.map(c => ({
-                ...c,
-                config: c.config ? JSON.parse(c.config) : {}
-            }))
-        };
+        const stmt = this.sqlite.prepare('SELECT * FROM channels WHERE bridge_id = ?');
+        return stmt.all(bridgeId).map(r => ({ ...r, config: JSON.parse(r.config || '{}') }));
     }
 
-    getAllActiveBridges() {
-        return this.db.prepare("SELECT id FROM bridges WHERE status = 'active'").all();
+    getKV(key) {
+        const row = this.sqlite.prepare('SELECT value FROM kv_store WHERE key = ?').get(key);
+        return row ? JSON.parse(row.value) : null;
     }
 
-    findBridgeByChannel(platform, identifier) {
-        const channel = this.db.prepare(
-            'SELECT bridge_id FROM channels WHERE platform = ? AND identifier = ?'
-        ).get(platform, identifier);
-
-        return channel ? channel.bridge_id : null;
+    setKV(key, value) {
+        const stmt = this.sqlite.prepare(`
+        INSERT INTO kv_store (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        `);
+        stmt.run(key, JSON.stringify(value));
     }
 
     createBridge(id, name) {
-        this.db.prepare(
-            'INSERT INTO bridges (id, name, status, created_at) VALUES (?, ?, ?, ?)'
-        ).run(id, name, 'active', Date.now());
+        this.sqlite.prepare('INSERT INTO bridges (id, name) VALUES (?, ?)').run(id, name);
     }
 
-    addChannelToBridge(bridgeId, platform, identifier, config = {}) {
-        const id = `${platform}_${identifier}`;
-        this.db.prepare(
-            'INSERT INTO channels (id, bridge_id, platform, identifier, config) VALUES (?, ?, ?, ?, ?)'
-        ).run(id, bridgeId, platform, identifier, JSON.stringify(config));
+    linkChannelToBridge(bridgeId, platform, nativeId, config = {}) {
+        const id = `${platform}:${nativeId}`;
+        const stmt = this.sqlite.prepare(`
+        INSERT INTO channels (id, platform, native_id, bridge_id, config)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET bridge_id = excluded.bridge_id
+        `);
+        stmt.run(id, platform, nativeId, bridgeId, JSON.stringify(config));
     }
 }

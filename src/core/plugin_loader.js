@@ -1,3 +1,4 @@
+// src/core/plugin_loader.js
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -47,25 +48,30 @@ export default class PluginLoader {
             const entries = await fs.readdir(directory, { withFileTypes: true });
 
             for (const entry of entries) {
-                if (entry.isDirectory()) {
-                    const pluginName = entry.name;
-                    const pluginPath = path.join(directory, pluginName, 'index.js');
+                if (!entry.isDirectory()) continue;
 
-                    try {
-                        const moduleUrl = pathToFileURL(pluginPath).href;
-                        const { default: PluginClass } = await import(moduleUrl);
+                const pluginName = entry.name;
+                const entryPoint = path.join(directory, pluginName, 'index.js');
 
-                        this._validateInterface(pluginName, PluginClass);
+                try {
+                    await fs.access(entryPoint);
+                    const moduleUrl = pathToFileURL(entryPoint).href;
 
-                        const pluginContext = this._createPluginContext(pluginName, type);
-                        const instance = new PluginClass();
+                    const Module = await import(moduleUrl);
+                    const PluginClass = Module.default;
 
-                        await instance.init(pluginContext);
-                        this.plugins.set(`${type}:${pluginName}`, instance);
+                    this._validateInterface(pluginName, PluginClass);
 
-                        this.context.logger.debug('Loader', `Plugin cargado: ${pluginName} (${type})`);
-                    } catch (err) {
-                        this.context.logger.error('Loader', `Error cargando plugin ${pluginName}`, { error: err.message });
+                    const pluginContext = this._createPluginContext(pluginName, type);
+                    const instance = new PluginClass();
+
+                    await instance.init(pluginContext);
+                    this.plugins.set(pluginName, instance);
+                    this.context.logger.info('Loader', `Cargado: ${pluginName}`);
+
+                } catch (err) {
+                    if (err.code !== 'ENOENT') {
+                        this.context.logger.error('Loader', `Error cargando ${pluginName}`, { error: err.message });
                     }
                 }
             }
@@ -80,7 +86,8 @@ export default class PluginLoader {
             error: (msg, meta = {}) => this.context.logger.error(`${type}:${name}`, msg, meta),
             warn: (msg, meta = {}) => this.context.logger.warn(`${type}:${name}`, msg, meta),
             debug: (msg, meta = {}) => this.context.logger.debug(`${type}:${name}`, msg, meta),
-            withCorrelation: (meta, fn) => this.context.logger.withCorrelation(meta, fn)
+            withCorrelation: (meta, fn) => this.context.logger.withCorrelation(meta, fn),
+            getCorrelationId: () => this.context.logger.getCorrelationId()
         };
 
         return {
@@ -96,15 +103,10 @@ export default class PluginLoader {
     }
 
     _validateInterface(name, PluginClass) {
-        if (typeof PluginClass !== 'function') {
-            throw new Error(`El módulo ${name} no exporta una clase por defecto.`);
-        }
-        const requiredMethods = ['init', 'start', 'stop', 'health'];
-        const prototype = PluginClass.prototype;
-        const missing = requiredMethods.filter(m => typeof prototype[m] !== 'function');
-
-        if (missing.length > 0) {
-            throw new Error(`Plugin ${name} interfaz incompleta. Faltan: ${missing.join(', ')}`);
-        }
+        if (typeof PluginClass !== 'function') throw new Error(`El módulo ${name} no exporta una clase.`);
+        const required = ['init', 'start', 'stop', 'health'];
+        const proto = PluginClass.prototype;
+        const missing = required.filter(m => typeof proto[m] !== 'function');
+        if (missing.length > 0) throw new Error(`Plugin ${name} incompleto. Faltan: ${missing.join(', ')}`);
     }
 }

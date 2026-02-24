@@ -1,35 +1,48 @@
+// src/addons/bridge_router/index.js
 export default class UniversalRouter {
     constructor() {
-        this.name = 'Universal Router';
+        this.ctx = null;
     }
 
-    async init(ctx) { this.ctx = ctx; }
+    async init(ctx) {
+        this.ctx = ctx;
+        this.logger = ctx.logger;
+    }
 
     async start() {
+        this.logger.info('Router activo y escuchando message.ingress');
         this.ctx.bus.on('message.ingress', (umf) => this.route(umf));
     }
 
     async route(umf) {
-        const link = await this.ctx.db.getChannelLink(umf.head.source.platform, umf.head.source.channelId);
-        if (!link) return;
+        try {
+            if (!umf.head || !umf.head.source) return;
 
-        const status = await this.ctx.db.getKV(`status:${link.bridge_id}`) || 'on';
-        if (status !== 'on') return;
+            const link = this.ctx.db.getChannelLink(umf.head.source.platform, umf.head.source.channelId);
+            if (!link) return;
 
-        const targets = await this.ctx.db.getBridgeTopology(link.bridge_id);
+            const targets = this.ctx.db.getBridgeTopology(link.bridge_id);
 
-        const promises = targets.map(async (target) => {
-            if (target.platform === umf.head.source.platform && target.native_id === umf.head.source.channelId) return;
+            for (const target of targets) {
+                if (target.platform === umf.head.source.platform && target.native_id === umf.head.source.channelId) continue;
 
-            const outbox = structuredClone(umf);
-            outbox.head.dest = { platform: target.platform, channelId: target.native_id };
+                const outbox = JSON.parse(JSON.stringify(umf));
+                outbox.head.dest = {
+                    platform: target.platform,
+                    channelId: target.native_id,
+                    bridgeId: link.bridge_id
+                };
 
-            await this.ctx.queue.add(`queue:${target.platform}:out`, outbox);
-        });
+                const queueName = `${target.platform}_out`;
+                await this.ctx.queue.add(queueName, outbox, { removeOnComplete: true });
 
-        await Promise.allSettled(promises);
+                this.logger.debug(`Enrutando mensaje de ${umf.head.source.platform} a ${target.platform}`);
+            }
+        } catch (error) {
+            this.logger.error('Error enrutando mensaje', { error: error.message });
+        }
     }
 
     async stop() {}
-    async health() { return { status: 'active' }; }
+    async health() { return { status: 'ok' }; }
 }

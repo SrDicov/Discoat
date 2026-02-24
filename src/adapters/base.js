@@ -13,7 +13,7 @@ export default class BaseAdapter {
 
         if (this.context.queue) {
             this.context.queue.process(
-                `queue:${this.platformName}:out`,
+                `${this.platformName}_out`,
                 (job) => this.processEgress(job),
                                        this.getRateLimitConfig()
             );
@@ -21,9 +21,7 @@ export default class BaseAdapter {
     }
 
     async start() { throw new Error('Method start() not implemented'); }
-
     async stop() { throw new Error('Method stop() not implemented'); }
-
     async processEgress(envelope) { throw new Error('Method processEgress() not implemented'); }
 
     getRateLimitConfig() { return null; }
