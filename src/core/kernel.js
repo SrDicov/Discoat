@@ -1,113 +1,157 @@
-import process from 'node:process';
-import ConfigLoader from '../../config/main.js';
-import Logger from './utils/observability.js';
-import MessageBus from './infra/message_bus.js';
-import Repository from './infra/repository.js';
-import PluginLoader from './plugin_loader.js';
-import QueueService from './infra/queue.js';
-import StorageService from './infra/storage.js';
+// src/core/kernel.js
+import { Config } from '../../config/main.js';
+import { Logger } from './utils/observability.js';
+import { MessageBus } from './infra/message_bus.js';
+import { Repository } from './infra/repository.js';
+import { StorageService } from './infra/storage.js';
+import { QueueManager } from './infra/queue.js';
+import { CircuitBreakerRegistry } from './utils/circuit_breaker.js';
+import { PluginLoader } from './plugin_loader.js';
+
+/**
+ * Kernel principal del sistema.
+ * Orquesta el ciclo de vida completo y gestiona el contenedor de Inyección de Dependencias (DI).
+ */
 export class Kernel {
     constructor() {
         this.startTime = Date.now();
         this.isShuttingDown = false;
 
+        // Contenedor estricto de Inyección de Dependencias (DI Container)
         this.context = {
             config: null,
-            logger: Logger,
+            logger: null,
             bus: null,
-            db: null,
-            queue: null,
+            repository: null,
             storage: null,
-            services: {},
-            kernel: this
+            queue: null,
+            circuitBreaker: null,
+            pluginLoader: null
         };
     }
 
-    async start() {
-        console.clear();
-        Logger.info('Kernel', '=== INICIANDO OPENCHAT v2.0 (MICROKERNEL) ===');
-
+    /**
+     * Fase 1: Inicialización de la infraestructura base de forma secuencial.
+     * Ningún plugin externo es cargado en esta etapa.
+     */
+    async init() {
         try {
-            await this._initInfrastructure();
-            await this._loadPlugins();
+            // 1. Configuración (Validación de entorno con variables Zod/Joi)
+            this.context.config = new Config();
+            await this.context.config.load();
 
-            this.context.bus.emit('system.ready', {
-                timestamp: Date.now(),
-                                  uptime: 0
-            });
+            // 2. Observabilidad (Logger estructurado + Soporte AsyncContextFrame de Node 24)
+            this.context.logger = new Logger(this.context.config);
+            this.context.logger.info('Iniciando secuencia de arranque de infraestructura del Microkernel...');
 
-            Logger.info('Kernel', `Sistema operativo. Iniciado en ${(Date.now() - this.startTime)}ms.`);
+            // 3. Bus de Mensajes (Event-Driven: EventEmitter local o Redis Pub/Sub)
+            this.context.bus = new MessageBus(this.context.config, this.context.logger);
+            await this.context.bus.connect();
 
-            this._bindSignalHandlers();
+            // 4. Repositorio (Persistencia relacional/caché para topologías - better-sqlite3 WAL)
+            this.context.repository = new Repository(this.context.config, this.context.logger);
+            await this.context.repository.connect();
+
+            // 5. Almacenamiento (Manejo de archivos multimedia S3/MinIO para claves de WhatsApp)
+            this.context.storage = new StorageService(this.context.config, this.context.logger);
+            await this.context.storage.connect();
+
+            // 6. Colas Distribuidas (BullMQ para Rate Limiting y Egress)
+            this.context.queue = new QueueManager(this.context.config, this.context.logger);
+            await this.context.queue.connect();
+
+            // 7. Registro de Circuit Breaker (Prevención de fallos en cascada contra APIs externas)
+            this.context.circuitBreaker = new CircuitBreakerRegistry(this.context.config, this.context.logger);
+
+            // 8. Gestor de Plugins (Aislamiento y carga dinámica ESM)
+            this.context.pluginLoader = new PluginLoader(this.context);
+            await this.context.pluginLoader.discover();
 
         } catch (error) {
-            console.error('\n❌ [FATAL KERNEL ERROR]:', error.message);
-            console.error(error.stack);
-            process.exit(1);
+            console.error('Fallo crítico y aborto durante la inicialización del Kernel:', error);
+            throw error;
         }
     }
 
-    async _initInfrastructure() {
-        Logger.debug('Kernel', 'Cargando infraestructura base...');
+    /**
+     * Fase 2: Arranque e inyección de contexto hacia Adaptadores y Addons N-a-N.
+     */
+    async start() {
+        if (this.isShuttingDown) return;
+        this.context.logger.info('Arrancando sistema y cargando módulos de integración...');
 
-        this.context.config = ConfigLoader;
-        if (!this.context.config) throw new Error('No se pudo cargar la configuración.');
+        try {
+            // Inyectar el Proxy del DI Container restringido a cada plugin validado
+            await this.context.pluginLoader.initAll();
 
-        this.context.bus = new MessageBus();
+            // Ejecutar los procesos de escucha y conexión de cada plugin (Login a Discord, WSS a Baileys, Webhooks Telegram)
+            await this.context.pluginLoader.startAll();
 
-        this.context.db = new Repository();
-        await this.context.db.init(this.context);
-        await this.context.db.connect();
+            // Notificar al clúster/bus local que el nodo actual está completamente operativo
+            this.context.bus.emit('system.ready', {
+                uptime: Date.now() - this.startTime,
+                                  timestamp: Date.now()
+            });
 
-        this.context.queue = new QueueService(this.context);
-        await this.context.queue.init();
-
-        this.context.storage = new StorageService(this.context);
-        await this.context.storage.init();
-        Logger.info('Kernel', 'Infraestructura base inicializada correctamente.');
+            this.context.logger.info(`Microkernel operativo y enrutando. Tiempo total de arranque: ${Date.now() - this.startTime}ms`);
+        } catch (error) {
+            this.context.logger.error('Error catastrófico durante el arranque de los plugins', { error: error.message, stack: error.stack });
+            throw error;
+        }
     }
 
-    async _loadPlugins() {
-        Logger.info('Kernel', 'Cargando plugins...');
-        const loader = new PluginLoader(this.context);
-
-        await loader.loadAddons();
-        await loader.loadAdapters();
-
-        this.pluginManager = loader;
-
-        await this.pluginManager.startAll();
-    }
-
-    _bindSignalHandlers() {
-        ['SIGINT', 'SIGTERM'].forEach(sig => {
-            process.on(sig, () => this.shutdown(sig));
-        });
-    }
-
-    async shutdown(signal) {
+    /**
+     * Fase 3: Apagado Elegante (Graceful Shutdown) disparado por SIGTERM/SIGINT.
+     * Asegura la liberación de puertos, vaciado de colas y desconexiones limpias.
+     */
+    async stop() {
         if (this.isShuttingDown) return;
         this.isShuttingDown = true;
 
-        Logger.warn('Kernel', `Deteniendo sistema por señal: ${signal}`);
+        const log = this.context.logger? this.context.logger.info.bind(this.context.logger) : console.log;
+        const logError = this.context.logger? this.context.logger.error.bind(this.context.logger) : console.error;
+
+        log('Iniciando secuencias de Graceful Shutdown del Microkernel...');
 
         try {
-            if (this.context.bus) this.context.bus.emit('system.shutdown', { signal });
-
-            if (this.pluginManager) await this.pluginManager.stopAll();
-
-            if (this.context.queue) await this.context.queue.stop();
-
-            if (this.context.db) {
-                if (typeof this.context.db.disconnect === 'function') await this.context.db.disconnect();
-                else if (typeof this.context.db.close === 'function') this.context.db.close();
+            // 1. Notificar al sistema para rechazar nuevas peticiones entrantes
+            if (this.context.bus) {
+                this.context.bus.emit('system.shutdown', { timestamp: Date.now() });
             }
 
-            Logger.info('Kernel', 'Apagado limpio completado.');
-            process.exit(0);
+            // 2. Detener adaptadores (Desconectar WebSockets y cerrar listeners nativos)
+            if (this.context.pluginLoader) {
+                log('Deteniendo ciclo de vida de los plugins...');
+                await this.context.pluginLoader.stopAll();
+            }
+
+            // 3. Pausar y drenar colas de BullMQ activas
+            if (this.context.queue) {
+                log('Cerrando conexiones y workers de colas de salida...');
+                await this.context.queue.disconnect();
+            }
+
+            // 4. Cerrar conexiones activas al clúster de Base de Datos
+            if (this.context.repository) {
+                log('Cerrando accesos a la persistencia relacional...');
+                await this.context.repository.disconnect();
+            }
+
+            // 5. Finalizar enlaces de almacenamiento S3
+            if (this.context.storage) {
+                await this.context.storage.disconnect();
+            }
+
+            // 6. Cerrar el sistema nervioso principal
+            if (this.context.bus) {
+                log('Desconectando Bus de Eventos...');
+                await this.context.bus.disconnect();
+            }
+
+            log('Microkernel detenido. Todas las dependencias han sido liberadas exitosamente.');
         } catch (error) {
-            console.error('Error durante el apagado:', error);
-            process.exit(1);
+            logError('Fallo detectado durante el proceso de apagado del Kernel', { error: error.message, stack: error.stack });
+            throw error;
         }
     }
 }

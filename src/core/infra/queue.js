@@ -1,121 +1,180 @@
+// src/core/infra/queue.js
 import { Queue, Worker } from 'bullmq';
-import IORedis from 'ioredis';
+import Redis from 'ioredis';
+import { randomUUID } from 'node:crypto';
 
-export default class QueueService {
-    constructor(context) {
-        this.context = context;
-        this.config = context.config;
-        this.logger = context.logger;
+/**
+ * Gestor avanzado de colas basado en BullMQ.
+ * Centraliza la limitación de tasa (Rate Limiting) dinámica por plataforma
+ * y maneja los reintentos automáticos para mitigar errores 429 de APIs externas.
+ */
+export class QueueManager {
+    constructor(configInstance, logger) {
+        // Obtenemos la configuración inmutable inyectada por el Kernel
+        this.config = configInstance? configInstance.get() : {};
+        this.logger = logger;
 
+        // Estructuras de rastreo para evitar la duplicación de hilos
         this.queues = new Map();
         this.workers = new Map();
-        this.redisConnection = null;
+        this.redisClient = null;
     }
 
-    async init() {
-        const redisUrl = this.config.redis?.url || 'redis://127.0.0.1:6379';
-        const safeUrl = redisUrl.replace(/:([^@]+)@/, ':***@');
+    /**
+     * Establece la conexión asíncrona dedicada para las colas.
+     * BullMQ requiere maxRetriesPerRequest en null obligatoriamente.
+     */
+    async connect() {
+        if (this.logger) this.logger.info('Inicializando QueueManager (BullMQ)...');
 
-        this.logger.info({ section: 'infra:queue', url: safeUrl }, 'Conectando a Redis...');
+        const redisUrl = this.config.redis?.url  ||  'redis://127.0.0.1:6379';
 
-        this.redisConnection = new IORedis(redisUrl, {
-            maxRetriesPerRequest: null,
-            enableReadyCheck: false,
-            lazyConnect: true,
-            retryStrategy(times) {
-                const delay = Math.min(times * 50, 2000);
-                return delay;
-            }
+        return new Promise((resolve) => {
+            this.redisClient = new Redis(redisUrl, {
+                maxRetriesPerRequest: null,
+                // Estrategia de Retroceso (Backoff) progresivo
+                retryStrategy: (times) => Math.min(times * 50, 2000)
+            });
+
+            let isResolved = false;
+
+            this.redisClient.on('ready', () => {
+                if (!isResolved) {
+                    if (this.logger) this.logger.info('Conexión nativa de Redis para BullMQ establecida exitosamente.');
+                    isResolved = true;
+                    resolve();
+                }
+            });
+
+            this.redisClient.on('error', (err) => {
+                if (this.logger) this.logger.error('Fallo de conexión persistente en QueueManager (Redis):', { error: err.message });
+            });
         });
+    }
 
-        this.redisConnection.on('error', (err) => {
-            this.logger.warn({ section: 'infra:queue', error: err.message }, 'Evento de error en Redis (no crítico)');
-        });
-
-        try {
-            await this.redisConnection.connect();
-            await this.redisConnection.ping();
-            this.logger.info({ section: 'infra:queue' }, 'Redis conectado y listo.');
-        } catch (error) {
-            if (error.message.includes('ENOTFOUND')) {
-                this.logger.error({ section: 'infra:queue' }, '❌ ERROR DNS REDIS: El host no existe.');
-                this.logger.error({ section: 'infra:queue' }, '💡 SOLUCIÓN: Verifica config/main.js o tu .env. Si estás en local, usa "127.0.0.1". Si estás en Docker, usa el nombre del servicio.');
-            } else if (error.message.includes('ECONNREFUSED')) {
-                this.logger.error({ section: 'infra:queue' }, '❌ ERROR CONEXIÓN REDIS: Conexión rechazada.');
-                this.logger.error({ section: 'infra:queue' }, '💡 SOLUCIÓN: ¿Está corriendo el servidor de Redis? (sudo service redis-server start)');
-            }
-            throw new Error(`Fallo crítico Redis: ${error.message}`);
+    /**
+     * Helper interno para abstraer y reutilizar las instancias de Colas de envío.
+     *
+     * @param {string} queueName - Nombre de la cola (ej. 'discord:out')
+     */
+    _getQueue(queueName) {
+        if (!this.queues.has(queueName)) {
+            const queue = new Queue(queueName, { connection: this.redisClient });
+            this.queues.set(queueName, queue);
         }
+        return this.queues.get(queueName);
     }
 
-    async add(queueName, data, options = {}) {
+    /**
+     * Registra un nuevo evento/mensaje en la cola especificada.
+     * Asegura políticas estrictas de auto-limpieza para no saturar la memoria RAM.
+     *
+     * @param {string} queueName - Identificador del destino
+     * @param {Object} jobData - Carga útil (habitualmente el Formato Universal de Mensaje UMF)
+     * @param {Object} options - Parámetros particulares del trabajo
+     */
+    async add(queueName, jobData, options = {}) {
         const queue = this._getQueue(queueName);
+
+        // Inyectar o asegurar persistencia del Trace ID transversal
+        if (!jobData.correlationId && this.logger) {
+            jobData.correlationId = this.logger.getCorrelationId()  ||  randomUUID();
+        }
 
         const defaultOptions = {
             attempts: 3,
             backoff: { type: 'exponential', delay: 1000 },
+            // Eliminación predeterminada para evitar desbordamiento en memoria volátil de Redis
             removeOnComplete: 100,
             removeOnFail: 500
         };
 
-        return await queue.add('process', data, { ...defaultOptions, ...options });
+        const mergedOptions = {...defaultOptions,...options };
+        return queue.add(queueName, jobData, mergedOptions);
     }
 
-    process(queueName, processorFn, limitOptions = null) {
-        if (this.workers.has(queueName)) return;
+    /**
+     * Instancia un Trabajador (Worker) consumidor de cola aplicando
+     * restricciones de velocidad para no ser suspendido por los proveedores externos.
+     *
+     * @param {string} queueName - Cola de la cual extraer trabajos
+     * @param {Function} processorFn - Lógica asíncrona de procesamiento a delegar
+     * @param {Object} limitOptions - Configuración de contención y cuotas
+     */
+    process(queueName, processorFn, limitOptions = {}) {
+        if (this.workers.has(queueName)) {
+            if (this.logger) this.logger.warn(`Intento de duplicación de worker abortado para la cola: [${queueName}]`);
+            return;
+        }
 
         const workerOptions = {
-            connection: this.redisConnection,
-            concurrency: limitOptions?.concurrency || 5,
-            limiter: limitOptions?.rateLimit ? {
-                max: limitOptions.rateLimit.max,
-                duration: limitOptions.rateLimit.duration
-            } : undefined
+            connection: this.redisClient,
+            concurrency: limitOptions.concurrency  ||  5
         };
 
-        const worker = new Worker(queueName, async (job) => {
-            const traceId = job.data?.head?.correlationId || `job-${job.id}`;
+        // Abstracción estricta del limitador global usando algoritmo Token Bucket de BullMQ
+        if (limitOptions.rateLimit) {
+            workerOptions.limiter = {
+                max: limitOptions.rateLimit.max,
+                duration: limitOptions.rateLimit.duration
+            };
+        }
 
-            return this.logger.withCorrelation({ correlationId: traceId, source: `worker:${queueName}` }, async () => {
-                try {
-                    await processorFn(job.data);
-                } catch (err) {
-                    this.logger.error({ section: 'infra:queue', error: err.message }, `Error procesando job en ${queueName}`);
-                    throw err;
-                }
-            });
+        const worker = new Worker(queueName, async (job) => {
+            // Extracción de contexto para observabilidad en el Worker aislado
+            const correlationId = job.data.correlationId  ||  job.data.head?.correlationId  ||  job.id;
+
+            if (this.logger) {
+                // Inyectar el Correlation ID en el AsyncContextFrame de Node.js 24
+                return this.logger.withCorrelation(correlationId, async () => {
+                    return processorFn(job);
+                });
+            } else {
+                return processorFn(job);
+            }
         }, workerOptions);
 
         worker.on('failed', (job, err) => {
-            this.logger.warn({ section: 'infra:queue', jobId: job.id, error: err.message }, `Job falló en ${queueName}`);
+            if (this.logger) {
+                this.logger.error(`Trabajo fallido en cola delegada [${queueName}] (ID: ${job?.id}):`, {
+                    error: err.message,
+                    stack: err.stack,
+                    attemptsMade: job?.attemptsMade
+                });
+            }
         });
 
         this.workers.set(queueName, worker);
     }
 
-    async stop() {
-        this.logger.info({ section: 'infra:queue' }, 'Deteniendo colas y workers...');
-        const closePromises = [];
+    /**
+     * Cierra de forma ordenada todo el flujo de trabajos y colas,
+     * devolviendo los trabajos pendientes a Redis (Graceful Shutdown).
+     */
+    async disconnect() {
+        if (this.logger) this.logger.info('Pausando flujos y desconectando dependencias de QueueManager...');
 
-        for (const worker of this.workers.values()) closePromises.push(worker.close());
-        for (const queue of this.queues.values()) closePromises.push(queue.close());
+        try {
+            const closePromises = [];
 
-        await Promise.allSettled(closePromises);
-
-        if (this.redisConnection) {
-            try {
-                await this.redisConnection.quit();
-            } catch (e) {
-                // ignore
+            // Drenado de trabajadores
+            for (const worker of this.workers.values()) {
+                closePromises.push(worker.close());
             }
-        }
-    }
 
-    _getQueue(name) {
-        if (!this.queues.has(name)) {
-            const queue = new Queue(name, { connection: this.redisConnection });
-            this.queues.set(name, queue);
+            // Cierre de colas emisoras
+            for (const queue of this.queues.values()) {
+                closePromises.push(queue.close());
+            }
+
+            // Garantizar la limpieza de todos sin importar el error individual de uno
+            await Promise.allSettled(closePromises);
+
+            if (this.redisClient) {
+                await this.redisClient.quit();
+            }
+        } catch (error) {
+            if (this.logger) this.logger.error('Anomalía técnica al desconectar el cluster de encolado:', { error });
         }
-        return this.queues.get(name);
     }
 }

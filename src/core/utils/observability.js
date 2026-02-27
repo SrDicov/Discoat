@@ -1,50 +1,90 @@
-import pino from 'pino';
+// src/core/utils/observability.js
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 
 const asyncLocalStorage = new AsyncLocalStorage();
 
-const transport = pino.transport({
-    target: 'pino-pretty',
-    options: {
-        colorize: true,
-        translateTime: 'SYS:standard',
-        ignore: 'pid,hostname'
+export class Logger {
+    constructor(configInstance) {
+        this.config = configInstance ? configInstance.get() : {};
+        const sysConfig = this.config.system || {};
+
+        this.env = sysConfig.env || 'production';
+        this.logLevel = sysConfig.logLevel || (this.env === 'production' ? 'info' : 'debug');
+        this.nodeId = sysConfig.nodeId || 'core-unknown';
+
+        this.levels = { debug: 10, info: 20, warn: 30, error: 40 };
     }
-});
 
-const baseLogger = pino({ level: process.env.LOG_LEVEL || 'info' }, transport);
+    withCorrelation(correlationData, fn) {
+        let contextData = {};
 
-const logger = {
-    info: (section, msg, data) => log('info', section, msg, data),
-    error: (section, msg, data) => log('error', section, msg, data),
-    warn: (section, msg, data) => log('warn', section, msg, data),
-    debug: (section, msg, data) => log('debug', section, msg, data),
+        if (typeof correlationData === 'string') {
+            contextData = { correlationId: correlationData };
+        } else if (correlationData && typeof correlationData === 'object') {
+            contextData = { ...correlationData };
+        }
 
-    withCorrelation: (context, fn) => {
-        const store = {
-            correlationId: context.correlationId || randomUUID(),
-            source: context.source || 'system'
+        if (!contextData.correlationId) {
+            contextData.correlationId = randomUUID();
+        }
+
+        return asyncLocalStorage.run(contextData, fn);
+    }
+
+    getCorrelationId() {
+        const store = asyncLocalStorage.getStore();
+        return store ? store.correlationId : null;
+    }
+
+    _log(level, message, metadata = {}) {
+        if (this.levels[level] < this.levels[this.logLevel]) return;
+
+        const store = asyncLocalStorage.getStore() || {};
+        const correlationId = store.correlationId || randomUUID();
+
+        const logEntry = {
+            timestamp: new Date().toISOString(),
+            level: level.toUpperCase(),
+            nodeId: this.nodeId,
+            correlationId,
+            ...store,
+            message,
+            ...metadata
         };
-        return asyncLocalStorage.run(store, fn);
+
+        if (metadata.error instanceof Error) {
+            logEntry.error = {
+                message: metadata.error.message,
+                name: metadata.error.name,
+                stack: metadata.error.stack
+            };
+        }
+
+        const jsonOutput = JSON.stringify(logEntry);
+
+        if (level === 'error') {
+            console.error(jsonOutput);
+        } else if (level === 'warn') {
+            console.warn(jsonOutput);
+        } else {
+            console.log(jsonOutput);
+        }
     }
-};
 
-function log(level, section, msg, data = {}) {
-    const store = asyncLocalStorage.getStore();
-    const logData = {
-        section,
-        cid: store?.correlationId || null,
-        src: store?.source || 'core',
-        ...data
-    };
-
-    if (data.error instanceof Error) {
-        logData.stack = data.error.stack;
-        logData.error = data.error.message;
+    info(message, metadata = {}) {
+        this._log('info', message, metadata);
     }
 
-    baseLogger[level](logData, msg);
+    error(message, metadata = {}) {
+        this._log('error', message, metadata);
+    }
+
+    warn(message, metadata = {}) {
+        this._log('warn', message, metadata);
+    }
+
+    debug(message, metadata = {}) {
+        this._log('debug', message, metadata);
+    }
 }
-
-export default logger;

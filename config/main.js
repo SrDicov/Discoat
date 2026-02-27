@@ -18,47 +18,68 @@ const envSchema = z.object({
                            TELEGRAM_TOKEN: z.string().optional(),
                            STOAT_TOKEN: z.string().optional(),
                            OPENAI_API_KEY: z.string().optional(),
-                           SIGNAL_PHONE: z.string().optional(),
+                           SIGNAL_PHONE: z.string().optional()
 });
 
-const env = envSchema.parse(process.env);
+export class Config {
+    constructor() {
+        this.settings = null;
+    }
 
-export default {
-    system: {
-        env: env.NODE_ENV,
-        nodeId: env.NODE_ID,
-        logLevel: env.NODE_ENV === 'production' ? 'info' : 'debug'
-    },
-    port: env.PORT,
-    public_url: env.PUBLIC_URL,
-        database: {
-            url: env.DATABASE_URL,
-            ssl: env.NODE_ENV === 'production'
-        },
-        redis: {
-            url: env.REDIS_URL
-        },
-        storage: {
-            bucket: env.S3_BUCKET,
-            region: env.S3_REGION,
-            credentials: {
-                accessKeyId: env.S3_ACCESS_KEY,
-                secretAccessKey: env.S3_SECRET_KEY
-            },
-            endpoint: env.S3_ENDPOINT,
-            cdnUrl: env.CDN_URL
-        },
-        tokens: {
-            discord: env.DISCORD_TOKEN,
-            telegram: env.TELEGRAM_TOKEN,
-            stoat: env.STOAT_TOKEN,
-            openai: env.OPENAI_API_KEY,
-            signal: {
-                phone: env.SIGNAL_PHONE,
-                mode: "json-rpc"
-            }
-        },
-        bot: {
-            prefixes: [".", "/"]
+    async load() {
+        const parsed = envSchema.safeParse(process.env);
+
+        if (!parsed.success) {
+            console.error('Error crítico: Variables de entorno inválidas o faltantes.', parsed.error.format());
+            process.exit(1);
         }
-};
+
+        const env = parsed.data;
+
+        this.settings = Object.freeze({
+            system: Object.freeze({
+                env: env.NODE_ENV,
+                nodeId: env.NODE_ID,
+                logLevel: env.NODE_ENV === 'production'? 'info' : 'debug'
+            }),
+            network: Object.freeze({
+                port: env.PORT,
+                public_url: env.PUBLIC_URL
+            }),
+            database: Object.freeze({
+                url: env.DATABASE_URL,
+                ssl: env.NODE_ENV === 'production'
+            }),
+            redis: Object.freeze({
+                url: env.REDIS_URL
+            }),
+            storage: Object.freeze({
+                bucket: env.S3_BUCKET,
+                region: env.S3_REGION,
+                credentials: Object.freeze({
+                    accessKeyId: env.S3_ACCESS_KEY,
+                    secretAccessKey: env.S3_SECRET_KEY
+                }),
+                endpoint: env.S3_ENDPOINT,
+                cdnUrl: env.CDN_URL
+            }),
+            integrations: Object.freeze({
+                discord: env.DISCORD_TOKEN,
+                telegram: env.TELEGRAM_TOKEN,
+                stoat: env.STOAT_TOKEN,
+                openai: env.OPENAI_API_KEY,
+                signal: Object.freeze({
+                    phone: env.SIGNAL_PHONE,
+                    mode: 'json-rpc'
+                })
+            }),
+            bot: Object.freeze({
+                prefixes: Object.freeze(['.', '/'])
+            })
+        });
+    }
+
+    get() {
+        return this.settings;
+    }
+}

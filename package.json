@@ -1,42 +1,31 @@
 {
   "name": "openchat-core",
-  "version": "2.1.0",
-  "description": "Microkernel de Interconexión Omnicanal (OpenChat v2)",
+  "version": "2.0.0",
+  "description": "Enrutador N-a-N modular basado en Microkernel y Arquitectura Dirigida por Eventos",
   "main": "index.js",
   "type": "module",
   "engines": {
-    "node": ">=20.10.0"
+    "node": ">=24.0.0"
   },
   "scripts": {
-    "start": "node --env-file=.env index.js",
-    "dev": "node --watch --env-file=.env index.js",
-    "lint": "eslint src/**/*.js",
-    "clean": "rm -rf data/temp_media/* logs/*"
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "node --test"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.400.0",
-    "@aws-sdk/lib-storage": "^3.400.0",
+    "@aws-sdk/client-s3": "^3.0.0",
+    "@aws-sdk/s3-request-presigner": "^3.0.0",
     "@grammyjs/runner": "^2.0.0",
-    "@whiskeysockets/baileys": "^6.7.0",
-    "axios": "^1.13.5",
-    "better-sqlite3": "^11.10.0",
-    "bullmq": "^5.21.0",
-    "discord.js": "^14.16.0",
-    "dotenv": "^16.6.1",
-    "grammy": "^1.30.0",
-    "ioredis": "^5.4.1",
-    "luxon": "^3.5.0",
-    "openai": "^6.24.0",
-    "pg": "^8.18.0",
-    "pino": "^9.4.0",
-    "pino-pretty": "^11.2.0",
+    "@whiskeysockets/baileys": "^6.7.21",
+    "better-sqlite3": "^11.0.0",
+    "bullmq": "^5.0.0",
+    "discord.js": "^14.0.0",
+    "dotenv": "^16.0.0",
+    "grammy": "^1.0.0",
+    "ioredis": "^5.0.0",
     "qrcode-terminal": "^0.12.0",
-    "sharp": "^0.33.5",
-    "stoat.js": "file:vendor/stoat.js",
-    "zod": "^3.23.0"
-  },
-  "devDependencies": {
-    "eslint": "^9.12.0",
-    "prettier": "^3.3.0"
+    "sharp": "^0.33.0",
+    "stoat.js": "latest",
+    "zod": "^3.0.0"
   }
 }
