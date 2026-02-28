@@ -5,8 +5,10 @@ import { randomUUID } from 'node:crypto';
 const asyncLocalStorage = new AsyncLocalStorage();
 
 export class Logger {
+    // Recibimos un objeto plano de configuración, agnóstico de su origen
     constructor(configInstance) {
-        this.config = configInstance ? configInstance.get() : {};
+        // Reemplazamos configInstance.get() por el objeto directo (o un fallback vacío)
+        this.config = configInstance || {};
         const sysConfig = this.config.system || {};
 
         this.env = sysConfig.env || 'production';

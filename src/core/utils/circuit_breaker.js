@@ -155,7 +155,7 @@ export class CircuitBreaker extends EventEmitter {
 export class CircuitBreakerRegistry {
     constructor(configInstance, logger) {
         // Acceso inmutable a las configuraciones
-        this.config = configInstance? configInstance.get() : {};
+        this.config = configInstance? configInstance || {} : {};
         this.logger = logger;
 
         // Mapa contenedor de instancias de CircuitBreaker activas

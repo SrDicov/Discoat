@@ -110,6 +110,7 @@ export class PluginLoader {
 
     /**
      * Fase de Inicialización: Inyecta el contexto y los servicios.
+     * Si un plugin falla, se elimina del mapa para no considerarlo activo.
      */
     async initAll() {
         for (const [name, plugin] of this.plugins.entries()) {
@@ -119,12 +120,15 @@ export class PluginLoader {
                 if (this.kernelContext.logger) this.kernelContext.logger.info(`Plugin [${name}] inicializado.`);
             } catch (error) {
                 if (this.kernelContext.logger) this.kernelContext.logger.error(`Error inicializando plugin [${name}]:`, { error: error.message });
+                // Eliminar plugin defectuoso para no intentar iniciarlo/detenerlo después
+                this.plugins.delete(name);
             }
         }
     }
 
     /**
      * Fase de Ejecución: Conecta a los proveedores externos y colas.
+     * Si un plugin falla, se elimina del mapa para no considerarlo activo.
      */
     async startAll() {
         for (const [name, plugin] of this.plugins.entries()) {
@@ -133,12 +137,15 @@ export class PluginLoader {
                 if (this.kernelContext.logger) this.kernelContext.logger.info(`Plugin [${name}] en ejecución activa.`);
             } catch (error) {
                 if (this.kernelContext.logger) this.kernelContext.logger.error(`Fallo al arrancar el servicio del plugin [${name}]:`, { error: error.message });
+                // Eliminar plugin defectuoso para no intentar detenerlo después
+                this.plugins.delete(name);
             }
         }
     }
 
     /**
      * Fase de Destrucción: Maneja el Graceful Shutdown (liberación de memoria y WebSockets).
+     * Solo se ejecuta sobre los plugins que superaron init y start.
      */
     async stopAll() {
         for (const [name, plugin] of this.plugins.entries()) {

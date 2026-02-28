@@ -1,5 +1,4 @@
 // index.js
-import 'dotenv/config';
 import { Kernel } from './src/core/kernel.js';
 // Este archivo funciona como un punto de entrada agnóstico.
 const kernel = new Kernel();
@@ -37,6 +36,7 @@ process.on('uncaughtException', (error) => {
 
 process.on('unhandledRejection', (reason) => {
     console.error('Promesa rechazada no manejada:', reason);
+    gracefulShutdown('unhandledRejection');
 });
 
 bootstrap();

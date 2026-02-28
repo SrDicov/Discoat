@@ -10,8 +10,8 @@ import Redis from 'ioredis';
  */
 export class MessageBus {
     constructor(configInstance, logger) {
-        // Acceso inmutable a las configuraciones inyectadas
-        this.config = configInstance? configInstance.get() : {};
+        // Asignación directa: consumimos el objeto plano inyectado por el Microkernel
+        this.config = configInstance || {};
         this.logger = logger;
 
         // Bus local basado en memoria
@@ -31,7 +31,7 @@ export class MessageBus {
     async connect() {
         const redisUrl = this.config.redis?.url;
 
-        if (redisUrl && redisUrl!== 'memory' && this.config.system?.env === 'production') {
+        if (redisUrl && redisUrl !== 'memory' && this.config.system?.env === 'production') {
             this.mode = 'redis';
             this.logger.info('Inicializando MessageBus en modo Distribuido (Redis Pub/Sub)...');
             await this._initRedis(redisUrl);
@@ -103,10 +103,10 @@ export class MessageBus {
     emit(event, payload = {}) {
         // Extraer o generar el Trace ID. Prioriza contexto inyectado nativamente por AsyncContextFrame
         const correlationId = payload.correlationId
-         ||  (this.logger && this.logger.getCorrelationId())
-         ||  randomUUID();
+        || (this.logger && this.logger.getCorrelationId())
+        || randomUUID();
 
-        const enrichedPayload = {...payload, correlationId };
+        const enrichedPayload = { ...payload, correlationId };
 
         if (this.mode === 'redis') {
             this.pubClient.publish(event, JSON.stringify(enrichedPayload)).catch(err => {

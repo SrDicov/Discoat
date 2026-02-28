@@ -11,12 +11,12 @@ import { randomUUID } from 'node:crypto';
  */
 export class Repository {
     constructor(configInstance, logger) {
-        // Acceso inmutable a las configuraciones inyectadas
-        this.config = configInstance? configInstance.get() : {};
+        // CORRECCIÓN: Acceso directo al objeto plano inyectado por el contenedor DI
+        this.config = configInstance || {};
         this.logger = logger;
         this.db = null;
 
-        // Se asila la persistencia en el directorio local data/
+        // Se aísla la persistencia en el directorio local data/
         this.dbPath = path.resolve(process.cwd(), 'data', 'topology.db');
     }
 
@@ -125,7 +125,7 @@ export class Repository {
             // Parsear configuraciones JSON almacenadas como texto
             return results.map(row => ({
                 ...row,
-                config: row.config? JSON.parse(row.config) : {}
+                config: row.config ? JSON.parse(row.config) : {}
             }));
         } catch (error) {
             if (this.logger) this.logger.error('Error al consultar topología del puente', { error, bridgeId });

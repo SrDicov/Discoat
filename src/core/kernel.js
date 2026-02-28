@@ -1,5 +1,5 @@
 // src/core/kernel.js
-import { Config } from '../../config/main.js';
+import config from '../../config/main.js';  // Importación por defecto del objeto de configuración
 import { Logger } from './utils/observability.js';
 import { MessageBus } from './infra/message_bus.js';
 import { Repository } from './infra/repository.js';
@@ -36,9 +36,8 @@ export class Kernel {
      */
     async init() {
         try {
-            // 1. Configuración (Validación de entorno con variables Zod/Joi)
-            this.context.config = new Config();
-            await this.context.config.load();
+            // 1. Configuración (se asigna directamente el objeto importado)
+            this.context.config = config;
 
             // 2. Observabilidad (Logger estructurado + Soporte AsyncContextFrame de Node 24)
             this.context.logger = new Logger(this.context.config);
@@ -108,8 +107,8 @@ export class Kernel {
         if (this.isShuttingDown) return;
         this.isShuttingDown = true;
 
-        const log = this.context.logger? this.context.logger.info.bind(this.context.logger) : console.log;
-        const logError = this.context.logger? this.context.logger.error.bind(this.context.logger) : console.error;
+        const log = this.context.logger ? this.context.logger.info.bind(this.context.logger) : console.log;
+        const logError = this.context.logger ? this.context.logger.error.bind(this.context.logger) : console.error;
 
         log('Iniciando secuencias de Graceful Shutdown del Microkernel...');
 

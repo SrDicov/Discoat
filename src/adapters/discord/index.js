@@ -50,7 +50,7 @@ export default class DiscordAdapter extends BaseAdapter {
      * @throws {Error} Si el token es inválido o falla la conexión.
      */
     async start() {
-        const token = this.config.integrations?.discord;
+        const token = this.config.tokens?.discord;
         if (!token) {
             this.logger.warn(`[${this.platformName}] Token no configurado. El adaptador permanecerá inactivo.`);
             return;
@@ -235,16 +235,43 @@ export default class DiscordAdapter extends BaseAdapter {
     }
 
     /**
-     * Gestor interno de Webhooks (Caché en RAM + Búsqueda nativa).
+     * Gestor interno de Webhooks (Caché en RAM + persistencia en Redis/BD).
      * @param {import('discord.js').TextChannel} channel - Canal de texto.
      * @returns {Promise<import('discord.js').Webhook|null>} Webhook utilizable o null.
      * @private
      */
     async _getOrCreateWebhook(channel) {
+        // Intentar obtener de caché en memoria
         if (this.webhookCache.has(channel.id)) {
             return this.webhookCache.get(channel.id);
         }
 
+        // Intentar obtener de caché persistente (Redis/BD) - CORRECCIÓN: Añadido await
+        let webhookData = null;
+        if (this.context.db && typeof this.context.db.getKV === 'function') {
+            try {
+                webhookData = await this.context.db.getKV(`webhook:dc:${channel.id}`);
+            } catch (error) {
+                this.logger.warn(`[${this.platformName}] Error al leer caché persistente para webhook en canal ${channel.id}`, { error: error.message });
+            }
+        }
+
+        if (webhookData) {
+            // Reconstruir objeto webhook a partir de datos guardados (ej. { id, token })
+            try {
+                const webhook = await this.client.fetchWebhook(webhookData.id, webhookData.token);
+                this.webhookCache.set(channel.id, webhook);
+                return webhook;
+            } catch (error) {
+                this.logger.warn(`[${this.platformName}] Webhook persistente no válido, se recreará.`, { error: error.message });
+                // Si falla, se procede a crear uno nuevo (eliminar entrada corrupta)
+                if (this.context.db && typeof this.context.db.delKV === 'function') {
+                    await this.context.db.delKV(`webhook:dc:${channel.id}`).catch(() => {});
+                }
+            }
+        }
+
+        // Si no hay en caché, buscar o crear webhook en Discord
         try {
             const webhooks = await channel.fetchWebhooks();
             let webhook = webhooks.find(wh => wh.token); // Buscar uno utilizable por el bot
@@ -261,7 +288,16 @@ export default class DiscordAdapter extends BaseAdapter {
                 }
             }
 
+            // Guardar en caché en memoria y persistente
             this.webhookCache.set(channel.id, webhook);
+            if (this.context.db && typeof this.context.db.setKV === 'function') {
+                try {
+                    await this.context.db.setKV(`webhook:dc:${channel.id}`, { id: webhook.id, token: webhook.token });
+                } catch (error) {
+                    this.logger.warn(`[${this.platformName}] No se pudo persistir webhook en Redis`, { error: error.message });
+                }
+            }
+
             return webhook;
         } catch (error) {
             this.logger.warn(`[${this.platformName}] Imposible gestionar Webhooks en el canal ${channel.id}. Se aplicará Fallback.`, { error: error.message });

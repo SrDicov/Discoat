@@ -15,7 +15,7 @@ import sharp from 'sharp';
  */
 export class StorageService {
     constructor(configInstance, logger) {
-        this.config = configInstance? configInstance.get() : {};
+        this.config = configInstance? configInstance || {} : {};
         this.logger = logger;
         this.s3Client = null;
 

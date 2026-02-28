@@ -46,7 +46,7 @@ export default class TelegramAdapter extends BaseAdapter {
      * @throws {Error} Si no hay token o falla la conexión inicial.
      */
     async start() {
-        const token = this.config.integrations?.telegram;
+        const token = this.config.tokens?.telegram;
         if (!token) {
             this.logger.warn(`[${this.platformName}] Token no configurado. El adaptador permanecerá inactivo.`);
             return;

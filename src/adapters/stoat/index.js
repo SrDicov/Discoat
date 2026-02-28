@@ -45,7 +45,7 @@ export default class StoatAdapter extends BaseAdapter {
      * @throws {Error} Si el token es inválido o falla la autenticación.
      */
     async start() {
-        const token = this.config.integrations?.stoat;
+        const token = this.config.tokens?.stoat;
         if (!token) {
             this.logger.warn(`[${this.platformName}] Token no configurado. El adaptador permanecerá inactivo.`);
             return;

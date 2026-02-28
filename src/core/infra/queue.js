@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 export class QueueManager {
     constructor(configInstance, logger) {
         // Obtenemos la configuración inmutable inyectada por el Kernel
-        this.config = configInstance? configInstance.get() : {};
+        this.config = configInstance? configInstance || {} : {};
         this.logger = logger;
 
         // Estructuras de rastreo para evitar la duplicación de hilos
