@@ -29,7 +29,10 @@ export class PluginLoader {
             getBridgeTopology: this.kernelContext.repository?.getBridgeTopology.bind(this.kernelContext.repository),
             getAllActiveBridges: this.kernelContext.repository?.getAllActiveBridges.bind(this.kernelContext.repository),
             linkChannelToBridge: this.kernelContext.repository?.linkChannelToBridge.bind(this.kernelContext.repository),
-            updateBridgeStatus: this.kernelContext.repository?.updateBridgeStatus.bind(this.kernelContext.repository)
+            updateBridgeStatus: this.kernelContext.repository?.updateBridgeStatus.bind(this.kernelContext.repository),
+            // CORRECCIÓN: Exponer los métodos faltantes en el Sandbox
+            getChannelLink: this.kernelContext.repository?.getChannelLink.bind(this.kernelContext.repository),
+            createBridge: this.kernelContext.repository?.createBridge.bind(this.kernelContext.repository)
         };
 
         // Inmutabilidad para evitar la contaminación cruzada (Object.freeze)
@@ -94,7 +97,7 @@ export class PluginLoader {
             // Validación estricta del contrato (BaseAdapter)
             const requiredMethods = ['init', 'start', 'stop', 'health'];
             for (const method of requiredMethods) {
-                if (typeof instance[method]!== 'function') {
+                if (typeof instance[method] !== 'function') {
                     throw new Error(`El plugin incumple la interfaz requerida: falta el método ${method}()`);
                 }
             }

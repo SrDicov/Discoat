@@ -66,7 +66,17 @@ export default class StoatAdapter extends BaseAdapter {
     async stop() {
         if (this.client) {
             this.logger.info(`[${this.platformName}] Desconectando cliente...`);
-            this.client.logout();
+
+            // CORRECCIÓN: Manejo defensivo según la API de la librería
+            if (typeof this.client.disconnect === 'function') {
+                this.client.disconnect();
+            } else if (typeof this.client.destroy === 'function') {
+                this.client.destroy();
+            } else if (typeof this.client.logout === 'function') {
+                this.client.logout(); // Fallback
+            } else {
+                this.logger.warn(`[${this.platformName}] No se encontró un método de desconexión conocido. El cliente podría no cerrarse correctamente.`);
+            }
         }
     }
 
