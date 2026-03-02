@@ -185,22 +185,34 @@ export default class TelegramAdapter extends BaseAdapter {
             mainType = attachments.length > 0 ? mediaType : UMF_TYPES.FILE;
         }
 
+        // SOLUCIÓN AVATARES: Obtener foto de perfil al vuelo
+        let avatarUrl = null;
+        try {
+            const profile = await ctx.api.getUserProfilePhotos(ctx.from.id, { limit: 1 });
+            if (profile.total_count > 0) {
+                const file = await ctx.api.getFile(profile.photos[0][0].file_id);
+                avatarUrl = `https://api.telegram.org/file/bot${this.bot.token}/${file.file_path}`;
+            }
+        } catch (e) {
+            this.context.logger.debug(`[${this.platformName}] No se pudo resolver el avatar de ${ctx.from.username || ctx.from.id}`);
+        }
+
         // Empaquetado Estructural UMF
         const envelope = createEnvelope({
             type: mainType,
             source: {
                 platform: this.platformName,
                 channelId: String(ctx.chat.id),
-                                        userId: String(ctx.from.id),
-                                        username: ctx.from.username || ctx.from.first_name || 'Desconocido',
-                                        avatar: null // La obtención de avatares cuesta llamadas API pesadas adicionales, se delega al frontend/rutas
+                userId: String(ctx.from.id),
+                username: ctx.from.username || ctx.from.first_name || 'Desconocido',
+                avatar: avatarUrl
             },
             body: {
                 text: msg.text || msg.caption || '',
                 attachments
             },
             replyTo: msg.reply_to_message ? { parentId: String(msg.reply_to_message.message_id) } : null,
-                                        correlationId: this.context.logger.getCorrelationId()
+            correlationId: this.context.logger.getCorrelationId()
         });
 
         // Transmisión al gestor de topologías (Router N-a-N)
@@ -272,4 +284,4 @@ export default class TelegramAdapter extends BaseAdapter {
             }
         });
     }
-     }
+}

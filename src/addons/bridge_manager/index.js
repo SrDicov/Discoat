@@ -28,7 +28,7 @@ export default class BridgeManager {
         if (!this.commands.includes(cmd)) return;
 
         const { platform, channelId } = umf.head.source;
-        // CORRECCIÓN: usar repository en lugar de db (DI estandarizado)
+        // Usar repository (inyectado por el PluginLoader) para acceder a la topología
         const link = await this.context.repository.getChannelLink(platform, channelId);
         if (!link) return;
 
@@ -40,18 +40,18 @@ export default class BridgeManager {
                 break;
 
             case '!bridge.off':
-                // Se asume que repository cuenta con el método setKV (o se actualizará a updateBridgeStatus)
-                await this.context.repository.setKV(`status:${link.bridge_id}`, 'off');
+                // CORRECCIÓN: Usar el método semántico expuesto por el proxy del Kernel
+                await this.context.repository.updateBridgeStatus(link.bridge_id, 'off');
                 await this._reply(umf, "⏸️ Puente pausado para toda la red.");
                 break;
 
             case '!bridge.on':
-                await this.context.repository.setKV(`status:${link.bridge_id}`, 'on');
+                await this.context.repository.updateBridgeStatus(link.bridge_id, 'on');
                 await this._reply(umf, "▶️ Puente reactivado.");
                 break;
 
             case '!bridge.leave':
-                // Se asume que repository cuenta con el método unlinkChannel
+                // CORRECCIÓN: Se asume que el repositorio expone unlinkChannel (debe estar en safeRepository)
                 await this.context.repository.unlinkChannel(platform, channelId);
                 await this._reply(umf, "🔌 Has salido de la red.");
                 break;
@@ -62,13 +62,15 @@ export default class BridgeManager {
      * Envía una respuesta administrativa de vuelta al canal de origen.
      */
     async _reply(umf, text) {
+        // Asegurar la estructura UMF para evitar que los adaptadores de salida fallen
         const reply = {
             ...umf,
-            body: { text },
+            body: { text, attachments: [] },
             head: { ...umf.head, dest: umf.head.source }
         };
         // CORRECCIÓN: usar nomenclatura de colas con guiones bajos (consistente con router y workers)
-        await this.context.queue.add(`queue_${umf.head.source.platform}_out`, reply);
+        const queueName = `queue_${umf.head.source.platform}_out`;
+        await this.context.queue.add(queueName, reply);
     }
 
     /**

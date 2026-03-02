@@ -26,7 +26,13 @@ export default class DiscordAdapter extends BaseAdapter {
         await super.init(context);
 
         this.client = new Client({
-            intents: [], // Se pueden añadir intents según necesidades futuras
+            // SOLUCIÓN: Requerir los Intents para recibir mensajes y su contenido
+            intents: [
+                GatewayIntentBits.Guilds,
+                GatewayIntentBits.GuildMessages,
+                GatewayIntentBits.MessageContent, // Crítico para leer "!bridge.status"
+                GatewayIntentBits.DirectMessages
+            ],
             partials: [Partials.Message, Partials.Channel] // Permite recibir mensajes parciales (no cacheados)
         });
 
@@ -94,8 +100,14 @@ export default class DiscordAdapter extends BaseAdapter {
      * @private
      */
     _registerEvents() {
-        this.client.once('ready', () => {
+        // CORRECCIÓN: Usar clientReady para quitar el DeprecationWarning
+        this.client.once('clientReady', () => {
             this.logger.info(`[${this.platformName}] Conectado exitosamente como ${this.client.user.tag}`);
+        });
+
+        // Prevención de caídas de proceso si Discord pierde conexión
+        this.client.on('error', (err) => {
+            this.logger.error(`[${this.platformName}] Error en la conexión de Discord:`, { error: err.message });
         });
 
         this.client.on('messageCreate', async (msg) => {
@@ -153,9 +165,26 @@ export default class DiscordAdapter extends BaseAdapter {
             }
         }
 
-        // Estructuración Canónica (UMF Envelope)
+        // SOLUCIÓN EMOJIS: Convertir Emojis Custom de Discord a Stickers UMF
+        const customEmojiRegex = /<a?:([a-zA-Z0-9_]+):(\d+)>/g;
+        let match;
+        let cleanText = msg.content || '';
+        while ((match = customEmojiRegex.exec(msg.content)) !== null) {
+            const isAnimated = match[0].startsWith('<a:'); // Emojis animados (Nitro)
+            attachments.push({
+                id: match[2],
+                url: `https://cdn.discordapp.com/emojis/${match[2]}.${isAnimated ? 'gif' : 'png'}`,
+                type: UMF_TYPES.STICKER,
+                mimeType: `image/${isAnimated ? 'gif' : 'png'}`,
+                name: `${match[1]}.${isAnimated ? 'gif' : 'png'}`
+            });
+            // Eliminar la marca del texto
+            cleanText = cleanText.replace(match[0], '').trim();
+        }
+
+        // Estructuración Canónica (UMF Envelope) con el texto limpio
         const envelope = createEnvelope({
-            type: attachments.length > 0 && !msg.content ? UMF_TYPES.FILE : UMF_TYPES.TEXT,
+            type: attachments.length > 0 && !cleanText ? UMF_TYPES.FILE : UMF_TYPES.TEXT,
             source: {
                 platform: this.platformName,
                 channelId: msg.channel.id,
@@ -164,11 +193,13 @@ export default class DiscordAdapter extends BaseAdapter {
                 avatar: msg.author.displayAvatarURL({ extension: 'png', size: 512 })
             },
             body: {
-                text: msg.content,
+                text: cleanText,
                 attachments
             },
             replyTo: msg.reference ? { parentId: msg.reference.messageId } : null,
-            correlationId: this.context.logger.getCorrelationId()
+            correlationId: this.context.logger.getCorrelationId(),
+            // CORRECCIÓN: Iniciar la matriz topológica de rastreo para evitar tormentas de difusión
+            trace_path: [`${this.platformName}:${msg.channel.id}`]
         });
 
         // Emitir al enrutador central
@@ -194,8 +225,17 @@ export default class DiscordAdapter extends BaseAdapter {
             }
 
             // Identidad original abstraída en UMF
-            const senderName = `${envelope.head.source.username} (${envelope.head.source.platform})`;
-            const avatarUrl = envelope.head.source.avatar || this.config.storage?.cdnUrl + '/default-avatar.png';
+            let senderName = `${envelope.head.source.username} (${envelope.head.source.platform})`;
+
+            // SOLUCIÓN 1: Sanitización de palabras prohibidas por Discord (Filtro Anti-Phishing)
+            senderName = senderName.replace(/discord/gi, 'DC').replace(/clyde/gi, 'Cld').substring(0, 80);
+
+            // SOLUCIÓN 2: Validación estricta del esquema de URL para el Avatar
+            let avatarUrl = envelope.head.source.avatar;
+            if (!avatarUrl || !avatarUrl.startsWith('http')) {
+                // Fallback a un avatar genérico de Discord si no hay imagen válida
+                avatarUrl = 'https://cdn.discordapp.com/embed/avatars/0.png';
+            }
 
             // Preparar el cuerpo del mensaje nativo
             const payload = {
@@ -304,4 +344,4 @@ export default class DiscordAdapter extends BaseAdapter {
             return null;
         }
     }
-     }
+}

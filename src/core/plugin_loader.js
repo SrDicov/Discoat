@@ -26,25 +26,28 @@ export class PluginLoader {
     _createPluginContext(pluginName) {
         // Se restringe el acceso directo a la base de datos para obligar a usar los métodos del DAO
         const safeRepository = {
-            getBridgeTopology: this.kernelContext.repository?.getBridgeTopology.bind(this.kernelContext.repository),
-            getAllActiveBridges: this.kernelContext.repository?.getAllActiveBridges.bind(this.kernelContext.repository),
-            linkChannelToBridge: this.kernelContext.repository?.linkChannelToBridge.bind(this.kernelContext.repository),
-            updateBridgeStatus: this.kernelContext.repository?.updateBridgeStatus.bind(this.kernelContext.repository),
-            // CORRECCIÓN: Exponer los métodos faltantes en el Sandbox
-            getChannelLink: this.kernelContext.repository?.getChannelLink.bind(this.kernelContext.repository),
-            createBridge: this.kernelContext.repository?.createBridge.bind(this.kernelContext.repository)
+            // SOLUCIÓN: Agregado el encadenamiento opcional `?.` antes de .bind a todos los métodos
+            getBridgeTopology: this.kernelContext.repository?.getBridgeTopology?.bind(this.kernelContext.repository),
+            getAllActiveBridges: this.kernelContext.repository?.getAllActiveBridges?.bind(this.kernelContext.repository),
+            linkChannelToBridge: this.kernelContext.repository?.linkChannelToBridge?.bind(this.kernelContext.repository),
+            updateBridgeStatus: this.kernelContext.repository?.updateBridgeStatus?.bind(this.kernelContext.repository),
+            getChannelLink: this.kernelContext.repository?.getChannelLink?.bind(this.kernelContext.repository),
+            createBridge: this.kernelContext.repository?.createBridge?.bind(this.kernelContext.repository),
+            unlinkChannel: this.kernelContext.repository?.unlinkChannel?.bind(this.kernelContext.repository)
         };
 
         // Inmutabilidad para evitar la contaminación cruzada (Object.freeze)
         return Object.freeze({
             pluginName: pluginName,
-            config: Object.freeze({...this.kernelContext.config }),
-                             logger: this.kernelContext.logger,
-                             bus: this.kernelContext.bus,
-                             queue: this.kernelContext.queue,
-                             storage: this.kernelContext.storage,
-                             circuitBreaker: this.kernelContext.circuitBreaker,
-                             repository: safeRepository
+            config: Object.freeze({ ...this.kernelContext.config }),
+            logger: this.kernelContext.logger,
+            bus: this.kernelContext.bus,
+            queue: this.kernelContext.queue,
+            storage: this.kernelContext.storage,
+            circuitBreaker: this.kernelContext.circuitBreaker,
+            repository: safeRepository,
+            // SOLUCIÓN: Inyectar el cliente Redis nativo (ioredis) provisto por QueueManager
+            redis: this.kernelContext.queue?.redisClient
         });
     }
 

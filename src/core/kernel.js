@@ -26,7 +26,8 @@ export class Kernel {
             storage: null,
             queue: null,
             circuitBreaker: null,
-            pluginLoader: null
+            pluginLoader: null,
+            redis: null // <-- AÑADIDO: Cliente Redis para operaciones atómicas (SETNX, etc.)
         };
     }
 
@@ -62,7 +63,21 @@ export class Kernel {
             // 7. Registro de Circuit Breaker (Prevención de fallos en cascada contra APIs externas)
             this.context.circuitBreaker = new CircuitBreakerRegistry(this.context.config, this.context.logger);
 
-            // 8. Gestor de Plugins (Aislamiento y carga dinámica ESM)
+            // 8. Exponer el cliente Redis nativo para plugins que requieran operaciones atómicas
+            // Se asume que QueueManager (o MessageBus) provee un método para obtener el cliente Redis.
+            // En este caso, obtenemos el cliente desde QueueManager (que internamente lo usa para BullMQ).
+            if (this.context.queue && typeof this.context.queue.getRedisClient === 'function') {
+                this.context.redis = this.context.queue.getRedisClient();
+            } else {
+                // Fallback: intentar obtenerlo del MessageBus si está en modo Redis
+                if (this.context.bus && typeof this.context.bus.getRedisClient === 'function') {
+                    this.context.redis = this.context.bus.getRedisClient();
+                } else {
+                    this.context.logger.warn('No se pudo obtener un cliente Redis nativo. Algunos plugins (ej. deduplicación) podrían no funcionar correctamente.');
+                }
+            }
+
+            // 9. Gestor de Plugins (Aislamiento y carga dinámica ESM)
             this.context.pluginLoader = new PluginLoader(this.context);
             await this.context.pluginLoader.discover();
 
@@ -89,7 +104,7 @@ export class Kernel {
             // Notificar al clúster/bus local que el nodo actual está completamente operativo
             this.context.bus.emit('system.ready', {
                 uptime: Date.now() - this.startTime,
-                                  timestamp: Date.now()
+                timestamp: Date.now()
             });
 
             this.context.logger.info(`Microkernel operativo y enrutando. Tiempo total de arranque: ${Date.now() - this.startTime}ms`);
@@ -146,6 +161,9 @@ export class Kernel {
                 log('Desconectando Bus de Eventos...');
                 await this.context.bus.disconnect();
             }
+
+            // Nota: El cliente Redis (this.context.redis) se cierra indirectamente a través de queue.disconnect() o bus.disconnect()
+            // por lo que no es necesario cerrarlo explícitamente aquí.
 
             log('Microkernel detenido. Todas las dependencias han sido liberadas exitosamente.');
         } catch (error) {

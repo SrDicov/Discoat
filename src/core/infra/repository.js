@@ -62,7 +62,7 @@ export class Repository {
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             status TEXT DEFAULT 'on' CHECK(status IN ('on', 'off', 'paused')),
-                                            created_at INTEGER DEFAULT (cast(strftime('%s','now') as int))
+            created_at INTEGER DEFAULT (cast(strftime('%s','now') as int))
         );
 
         CREATE TABLE IF NOT EXISTS channels (
@@ -72,8 +72,8 @@ export class Repository {
             native_id TEXT NOT NULL,
             config JSON DEFAULT '{}',
             added_at INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                                             FOREIGN KEY (bridge_id) REFERENCES bridges(id) ON DELETE CASCADE,
-                                             UNIQUE(platform, native_id)
+            FOREIGN KEY (bridge_id) REFERENCES bridges(id) ON DELETE CASCADE,
+            UNIQUE(platform, native_id)
         );
 
         CREATE INDEX IF NOT EXISTS idx_channels_bridge ON channels(bridge_id);
@@ -87,13 +87,13 @@ export class Repository {
         SELECT c.bridge_id, b.status
         FROM channels c
         JOIN bridges b ON c.bridge_id = b.id
-        WHERE c.platform =? AND c.native_id =?
+        WHERE c.platform = ? AND c.native_id = ?
         `);
 
         this.stmtGetTopology = this.db.prepare(`
         SELECT platform, native_id, config
         FROM channels
-        WHERE bridge_id =?
+        WHERE bridge_id = ?
         `);
     }
 
@@ -129,7 +129,7 @@ export class Repository {
             }));
         } catch (error) {
             if (this.logger) this.logger.error('Error al consultar topología del puente', { error, bridgeId });
-            return;
+            return [];
         }
     }
 
@@ -139,7 +139,7 @@ export class Repository {
     createBridge(name, bridgeId = randomUUID()) {
         try {
             const insertBridge = this.db.prepare(`
-            INSERT INTO bridges (id, name, status) VALUES (?,?, 'on')
+            INSERT INTO bridges (id, name, status) VALUES (?, ?, 'on')
             ON CONFLICT(id) DO NOTHING
             `);
             insertBridge.run(bridgeId, name);
@@ -159,7 +159,7 @@ export class Repository {
         try {
             const insertChannel = this.db.prepare(`
             INSERT INTO channels (id, bridge_id, platform, native_id, config)
-            VALUES (?,?,?,?,?)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(platform, native_id)
             DO UPDATE SET bridge_id = excluded.bridge_id, config = excluded.config
             `);
@@ -176,11 +176,26 @@ export class Repository {
     }
 
     /**
+     * Elimina un canal de la topología (Desvinculación / Leave).
+     */
+    unlinkChannel(platform, nativeId) {
+        try {
+            const stmt = this.db.prepare(`DELETE FROM channels WHERE platform = ? AND native_id = ?`);
+            const info = stmt.run(platform, nativeId);
+            if (this.logger) this.logger.info(`Canal desvinculado de la red: [${platform}] ${nativeId}`);
+            return info.changes > 0;
+        } catch (error) {
+            if (this.logger) this.logger.error('Error al desenlazar canal', { error, platform, nativeId });
+            throw error;
+        }
+    }
+
+    /**
      * Modifica el estado operativo del puente actuando como barrera automatizada (Cortocircuito manual).
      */
     updateBridgeStatus(bridgeId, status) {
         try {
-            const update = this.db.prepare(`UPDATE bridges SET status =? WHERE id =?`);
+            const update = this.db.prepare(`UPDATE bridges SET status = ? WHERE id = ?`);
             update.run(status, bridgeId);
             if (this.logger) this.logger.info(`Estado del puente ${bridgeId} modificado a: ${status}`);
             return true;
@@ -199,7 +214,7 @@ export class Repository {
             return stmt.all();
         } catch (error) {
             if (this.logger) this.logger.error('Error al obtener puentes activos', { error });
-            return;
+            return [];
         }
     }
 

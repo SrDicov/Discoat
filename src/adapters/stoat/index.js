@@ -98,7 +98,16 @@ export default class StoatAdapter extends BaseAdapter {
      */
     _registerEvents() {
         this.client.on('ready', () => {
-            this.logger.info(`[${this.platformName}] Conectado exitosamente como ${this.client.user.username}`);
+            this.logger.info(`[${this.platformName}] Conectado exitosamente como ${this.client.user?.username || 'Bot'}`);
+        });
+
+        // SOLUCIÓN: Interceptar errores de la librería/WebSocket para evitar un colapso del proceso (Crash)
+        this.client.on('error', (err) => {
+            this.logger.error(`[${this.platformName}] Error asíncrono en el cliente o WebSocket subyacente:`, {
+                error: err.message || 'Error desconocido',
+                raw: err
+            });
+            // El CircuitBreaker o la lógica de reconexión interna de stoat.js deberían manejar el reintento.
         });
 
         // Soporte dual para retrocompatibilidad con versiones de SDK
@@ -119,13 +128,21 @@ export default class StoatAdapter extends BaseAdapter {
      * @private
      */
     async _handleIngress(msg) {
-        // Prevención estricta de Bucles: Ignorar mensajes del propio bot o creados vía Masquerade
-        if (msg.author?.bot || msg.masquerade) return;
+        // Prevención estricta de Bucles: Ignorar mensajes del propio bot, masquerade o del sistema
+        if (msg.author?.bot || msg.masquerade || msg.system) return;
+
+        // SOLUCIÓN: Tolerancia a nombres de propiedades (stoat.js usa camelCase)
+        const chanId = msg.channelId || msg.channel_id;
+        const authorId = msg.authorId || msg.author_id;
+        if (!chanId) {
+            this.logger.warn(`[${this.platformName}] No se pudo resolver el channelId del mensaje nativo. Mensaje ignorado.`);
+            return;
+        }
 
         const attachments = [];
 
         // Mapeo multimedia usando el proxy Autumn sin descargar buffers en memoria principal
-        if (msg.attachments && msg.attachments.length > 0) {
+        if (msg.attachments?.length > 0) {
             for (const att of msg.attachments) {
                 const fileUrl = `${this.autumnBaseUrl}/attachments/${att._id}/${encodeURIComponent(att.filename)}`;
                 attachments.push({
@@ -139,28 +156,46 @@ export default class StoatAdapter extends BaseAdapter {
             }
         }
 
-        // Resolución del avatar (Fallback a Autumn CDN manual si createFileURL falla)
+        // SOLUCIÓN EMOJIS: Extraer emojis personalizados de Revolt (:[ULID]:)
+        const revoltEmojiRegex = /:([A-Z0-9]{26}):/g;
+        let match;
+        let cleanText = msg.content || '';
+        while ((match = revoltEmojiRegex.exec(msg.content)) !== null) {
+            attachments.push({
+                id: match[1],
+                url: `${this.autumnBaseUrl}/emojis/${match[1]}`,
+                type: UMF_TYPES.STICKER,
+                mimeType: 'image/png',
+                name: `emoji-${match[1]}.png`
+            });
+            // Eliminar la marca del texto
+            cleanText = cleanText.replace(match[0], '').trim();
+        }
+
+        // Resolución del avatar (Fallback a Autumn CDN manual)
         let avatarUrl = null;
         if (msg.author?.avatar) {
             avatarUrl = `${this.autumnBaseUrl}/avatars/${msg.author.avatar._id}`;
         }
 
-        // Estructuración Canónica (UMF Envelope)
+        // Estructuración Canónica con trace_path
         const envelope = createEnvelope({
-            type: (attachments.length > 0 && !msg.content) ? UMF_TYPES.FILE : UMF_TYPES.TEXT,
-                                        source: {
-                                            platform: this.platformName,
-                                            channelId: msg.channel_id,
-                                            userId: msg.author_id,
-                                            username: msg.author?.username || 'Unknown',
-                                            avatar: avatarUrl
-                                        },
-                                        body: {
-                                            text: msg.content || '',
-                                            attachments
-                                        },
-                                        replyTo: (msg.reply_ids && msg.reply_ids.length > 0) ? { parentId: msg.reply_ids } : null,
-                                        correlationId: this.context.logger.getCorrelationId()
+            type: (attachments.length > 0 && !cleanText) ? UMF_TYPES.FILE : UMF_TYPES.TEXT,
+            source: {
+                platform: this.platformName,
+                channelId: chanId,
+                userId: authorId,
+                username: msg.author?.username || 'Usuario Stoat',
+                avatar: avatarUrl
+            },
+            body: {
+                text: cleanText || '',
+                attachments
+            },
+            replyTo: (msg.reply_ids && msg.reply_ids.length > 0) ? { parentId: msg.reply_ids[0] } : null,
+            correlationId: this.context.logger.getCorrelationId(),
+            // CRÍTICO: Iniciar matriz topológica para evitar tormentas de difusión
+            trace_path: [`${this.platformName}:${chanId}`]
         });
 
         // Emitir al bus para que el Router se encargue
@@ -177,19 +212,28 @@ export default class StoatAdapter extends BaseAdapter {
             const destChannelId = envelope.head.dest?.channelId;
             if (!destChannelId) throw new Error('Destino no especificado en el envelope UMF.');
 
-            const channel = this.client.channels.get(destChannelId);
+            // SOLUCIÓN 1: Recuperación de caché dinámica (Prevenir Condición de Carrera)
+            let channel = this.client.channels.get(destChannelId);
+            if (!channel && typeof this.client.channels.fetch === 'function') {
+                try {
+                    channel = await this.client.channels.fetch(destChannelId);
+                } catch (err) {
+                    this.logger.warn(`[${this.platformName}] Fallo al forzar fetch del canal.`);
+                }
+            }
+
             if (!channel) {
-                this.logger.warn(`[${this.platformName}] Canal destino no encontrado en caché: ${destChannelId}`);
-                return;
+                // Si aún no está, BullMQ lo reintentará gracias a su Backoff exponencial
+                throw new Error(`Canal destino no está listo o no existe: ${destChannelId}`);
             }
 
             const senderName = `${envelope.head.source.username} (${envelope.head.source.platform})`;
-            const avatarUrl = envelope.head.source.avatar || `${this.config.storage?.cdnUrl}/default-avatar.png`;
+            let avatarUrl = envelope.head.source.avatar;
 
             // Construir contenido base
             let content = envelope.body.text || '';
 
-            // Degradación Elegante: Añadir enlaces de adjuntos directamente al texto
+            // Degradación Elegante de Adjuntos
             if (envelope.body.attachments?.length > 0) {
                 content += '\n\n[Archivos adjuntos]:';
                 envelope.body.attachments.forEach(att => {
@@ -199,27 +243,32 @@ export default class StoatAdapter extends BaseAdapter {
 
             if (!content) content = '*[Mensaje multimedia]*';
 
-            // Parámetros para Masquerade (Suplantación de identidad)
+            // SOLUCIÓN 2: Masquerade Seguro (Evitar HTTP 400 de Revolt)
             const masquerade = {
-                name: senderName.substring(0, 32), // Stoat tiene límite estricto de nombre
-                                 avatar: avatarUrl
+                name: senderName.substring(0, 32) // Límite estricto de 32 caracteres
             };
 
+            // Solo añadir el avatar si es una URL pública segura
+            if (avatarUrl && avatarUrl.startsWith('http')) {
+                masquerade.avatar = avatarUrl;
+            }
+
             try {
+                // Intento Principal: Usar suplantación de identidad
                 await channel.sendMessage({
                     content: content,
                     masquerade: masquerade
                 });
             } catch (error) {
-                // Fallback de rescate: Si falla por avatar inválido (400/403 de Autumn), reintentamos sin el avatar
-                if (error?.response?.status === 400 || error?.response?.status === 403) {
-                    this.logger.warn(`[${this.platformName}] Envío con Masquerade falló (Avatar rechazado). Ejecutando degradación a solo nombre.`, { error: error.message });
+                this.logger.warn(`[${this.platformName}] Fallo en Masquerade. Degradando a mensaje estándar.`, { error: error.message });
+
+                // SOLUCIÓN 3: Fallback de Rescate Absoluto
+                try {
                     await channel.sendMessage({
-                        content: content,
-                        masquerade: { name: masquerade.name }
+                        content: `**${masquerade.name}**:\n${content}`
                     });
-                } else {
-                    throw error;
+                } catch (fatalError) {
+                    throw fatalError; // Que BullMQ lo marque como fallido
                 }
             }
         });
