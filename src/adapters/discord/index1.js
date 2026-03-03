@@ -245,21 +245,11 @@ export default class DiscordAdapter extends BaseAdapter {
             // Sanitización básica
             senderName = senderName.replace(/discord/gi, 'DC').replace(/clyde/gi, 'Cld').substring(0, 80);
 
-            // Normalización de Avatares para Discord
+            // Avatar con fallback público
             let avatarUrl = envelope.head.source.avatar;
-
             if (!avatarUrl || !avatarUrl.startsWith('http')) {
-                // Fallback público seguro
                 avatarUrl = 'https://cdn.discordapp.com/embed/avatars/0.png';
-            } else if (avatarUrl.includes('autumn.revolt.chat')) {
-                // SOLUCIÓN STOAT: Envolvemos SOLO a Revolt.
-                // Mantenemos el protocolo intacto y le exigimos a wsrv.nl que escupa un .png
-                // para que el validador estricto de Discord no rechace el Webhook.
-                avatarUrl = `https://wsrv.nl/?url=${encodeURIComponent(avatarUrl)}&output=png`;
             }
-
-            // IMPORTANTE: Si la URL es de Telegram o de WhatsApp, pasará de largo (as-is).
-            // Discord las renderiza nativamente y tocarlas corrompe sus firmas de seguridad.
 
             const payload = {
                 content: envelope.body.text || undefined,

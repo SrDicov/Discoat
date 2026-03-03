@@ -117,28 +117,13 @@ export default class StoatAdapter extends BaseAdapter {
             cleanText = cleanText.replace(match[0], '').trim();
         }
 
-        const mentionRegex = /<@([A-Z0-9]+)>/g;
-        let mentionMatch;
-        const originalText = msg.content || '';
-        while ((mentionMatch = mentionRegex.exec(originalText)) !== null) {
-            const userId = mentionMatch[1];
-            let username = `Usuario_${userId.slice(-4)}`;
-            if (this.client.users && typeof this.client.users.get === 'function') {
-                const user = this.client.users.get(userId);
-                if (user) {
-                    username = user.username || user.original_name || user.originalName || username;
-                }
-            }
-            cleanText = cleanText.replace(new RegExp(`<@${userId}>`, 'g'), `@${username}`);
-        }
-
-        // Construcción robusta del avatar de Stoat
-        let stAvatar = null;
-        if (msg.author?.avatar) {
-            const a = msg.author.avatar;
-            const aId = typeof a === 'string' ? a : a._id;
-            const aFile = typeof a === 'object' && a.filename ? `/${a.filename}` : '/avatar.png';
-            stAvatar = `${this.autumnBaseUrl}/avatars/${aId}${aFile}`;
+        if (msg.mentions && msg.mentions.length > 0) {
+            msg.mentions.forEach(mentionedUser => {
+                const userId = mentionedUser._id;
+                const username = mentionedUser.username || mentionedUser.original_name || 'Usuario';
+                const mentionRegex = new RegExp(`<@${userId}>`, 'g');
+                cleanText = cleanText.replace(mentionRegex, `@${username}`);
+            });
         }
 
         const envelope = createEnvelope({
@@ -148,7 +133,7 @@ export default class StoatAdapter extends BaseAdapter {
                                             channelId: chanId,
                                             userId: authorId,
                                             username: msg.author?.username || 'Unknown',
-                                            avatar: stAvatar
+                                            avatar: msg.author?.avatar ? `${this.autumnBaseUrl}/avatars/${msg.author.avatar._id}` : null
                                         },
                                         body: { text: cleanText || '', attachments },
                                         replyTo: (msg.reply_ids && msg.reply_ids.length > 0) ? { parentId: msg.reply_ids[0] } : null,
@@ -193,15 +178,8 @@ export default class StoatAdapter extends BaseAdapter {
             const masquerade = {
                 name: senderName.substring(0, 32)
             };
-
-            // Bypass del bloqueo de Telegram mediante proxy CDN
             if (avatarUrl && avatarUrl.startsWith('http')) {
-                if (avatarUrl.includes('api.telegram.org')) {
-                    const cleanUrl = avatarUrl.replace(/^https?:\/\//, '');
-                    masquerade.avatar = `https://wsrv.nl/?url=${encodeURIComponent(cleanUrl)}&w=128&h=128&fit=cover`;
-                } else {
-                    masquerade.avatar = avatarUrl;
-                }
+                masquerade.avatar = avatarUrl;
             }
 
             try {

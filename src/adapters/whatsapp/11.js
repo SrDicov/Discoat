@@ -6,7 +6,8 @@ import {
     DisconnectReason,
     downloadMediaMessage,
     fetchLatestBaileysVersion,
-    useMultiFileAuthState
+    useMultiFileAuthState,
+    makeInMemoryStore
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
@@ -20,7 +21,7 @@ export default class WhatsAppAdapter extends BaseAdapter {
         this.tempDir = path.join(process.cwd(), '.temp_wa_media');
         this.baileysLogger = pino({ level: 'silent' });
         this.isConnecting = false;
-        this.contactCache = new Map();
+        this.store = makeInMemoryStore({});
     }
 
     async init(context) {
@@ -58,6 +59,8 @@ export default class WhatsAppAdapter extends BaseAdapter {
             printQRInTerminal: false,
             syncFullHistory: false
         });
+
+        this.store.bind(this.sock.ev);
 
         this.sock.ev.on('creds.update', saveCredsFn);
 
@@ -185,10 +188,6 @@ export default class WhatsAppAdapter extends BaseAdapter {
         const authorId = msg.key.participant || msg.key.remoteJid;
         const authorName = msg.pushName || authorId.split('@')[0];
 
-        if (msg.pushName) {
-            this.contactCache.set(authorId, msg.pushName);
-        }
-
         let avatarUrl = null;
         try {
             avatarUrl = await this.sock.profilePictureUrl(authorId, 'image');
@@ -206,7 +205,11 @@ export default class WhatsAppAdapter extends BaseAdapter {
         const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
         for (const jid of mentionedJids) {
             const phone = jid.split('@')[0];
-            const contactName = this.contactCache.get(jid) || phone;
+            let contactName = phone;
+            const contact = this.store.contacts[jid];
+            if (contact) {
+                contactName = contact.notify || contact.verifiedName || contact.name || phone;
+            }
             const mentionRegex = new RegExp(`@${phone}(?!\\d)`, 'g');
             text = text.replace(mentionRegex, `@${contactName}`);
         }
