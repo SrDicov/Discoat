@@ -238,28 +238,24 @@ export default class DiscordAdapter extends BaseAdapter {
                 return;
             }
 
-            // Abreviatura de plataforma
+            // Identidad original abstraída en UMF
             const alias = getPlatformAlias(envelope.head.source.platform);
             let senderName = `${envelope.head.source.username} (${alias})`;
-
-            // Sanitización básica
             senderName = senderName.replace(/discord/gi, 'DC').replace(/clyde/gi, 'Cld').substring(0, 80);
 
-            // Normalización de Avatares para Discord
+            // 🛡️ SOLUCIÓN DEFINITIVA DE AVATARES
             let avatarUrl = envelope.head.source.avatar;
 
-            if (!avatarUrl || !avatarUrl.startsWith('http')) {
-                // Fallback público seguro
+            // 1. Escudo contra Modo Degradado: Prevenir "undefined/default-avatar.png"
+            if (!avatarUrl || typeof avatarUrl !== 'string' || !avatarUrl.startsWith('http')) {
+                // Fallback a la foto por defecto oficial de Discord
                 avatarUrl = 'https://cdn.discordapp.com/embed/avatars/0.png';
-            } else if (avatarUrl.includes('autumn.revolt.chat')) {
-                // SOLUCIÓN STOAT: Envolvemos SOLO a Revolt.
-                // Mantenemos el protocolo intacto y le exigimos a wsrv.nl que escupa un .png
-                // para que el validador estricto de Discord no rechace el Webhook.
+            }
+            // 2. Escudo Stoat: Forzar formato de salida .png para la validación estricta del Webhook
+            else if (avatarUrl.includes('autumn.revolt.chat')) {
                 avatarUrl = `https://wsrv.nl/?url=${encodeURIComponent(avatarUrl)}&output=png`;
             }
-
-            // IMPORTANTE: Si la URL es de Telegram o de WhatsApp, pasará de largo (as-is).
-            // Discord las renderiza nativamente y tocarlas corrompe sus firmas de seguridad.
+            // NOTA: WhatsApp y Telegram no se tocan. Pasan directos porque Discord los lee nativamente.
 
             const payload = {
                 content: envelope.body.text || undefined,
