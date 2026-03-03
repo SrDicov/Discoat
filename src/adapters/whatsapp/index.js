@@ -6,7 +6,7 @@ import {
     DisconnectReason,
     downloadMediaMessage,
     fetchLatestBaileysVersion,
-    useMultiFileAuthState          // <-- Importado para el fallback local
+    useMultiFileAuthState
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
@@ -52,7 +52,7 @@ export default class WhatsAppAdapter extends BaseAdapter {
             saveCredsFn = saveCreds;
         }
 
-        // 2. Obtener última versión de la API de WhatsApp (opcional, mejora la estabilidad)
+        // 2. Obtener última versión de la API de WhatsApp
         const { version, isLatest } = await fetchLatestBaileysVersion();
         this.logger.info(`[${this.platformName}] Conectando a WA v${version.join('.')} (Última: ${isLatest})`);
 
@@ -60,9 +60,9 @@ export default class WhatsAppAdapter extends BaseAdapter {
         this.sock = makeWASocket({
             version,
             auth: authState,
-            logger: this.baileysLogger,           // Silenciamos logs internos de Baileys
+            logger: this.baileysLogger,
             browser: ['Discoat Bridge', 'Chrome', '2.0.0'],
-            printQRInTerminal: false,              // Nosotros mostramos el QR manualmente
+            printQRInTerminal: false,
             syncFullHistory: false
         });
 
@@ -295,8 +295,10 @@ export default class WhatsAppAdapter extends BaseAdapter {
     }
 
     async processEgress(envelope) {
+        // Defensa perimetral: Si el socket no está inicializado, ignoramos silenciosamente el trabajo.
         if (!this.sock) {
-            throw new Error('Socket de WhatsApp no inicializado. El adaptador se encuentra inoperativo o en estado de fallo severo.');
+            this.logger.debug(`[${this.platformName}] Trabajo Egress descartado. Socket inactivo.`);
+            return; // Retorno temprano sin error, BullMQ da el trabajo por completado.
         }
 
         return this.breaker.fire(async () => {

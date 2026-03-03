@@ -46,8 +46,7 @@ export default class RouterAddon {
     }
 
     /**
-     * Lógica central de distribución en abanico (Fan-out) basada en la topología de la BD,
-     * ahora con verificación de salud de los adaptadores destino.
+     * Lógica central de distribución en abanico (Fan-out) basada en la topología de la BD.
      */
     async _routeMessage(envelope) {
         try {
@@ -77,7 +76,7 @@ export default class RouterAddon {
             const targets = this.context.repository.getBridgeTopology(link.bridge_id);
             if (!targets || targets.length === 0) return;
 
-            // CORRECCIÓN 1: Asegurar que el objeto en memoria TENGA un array válido ANTES de clonar
+            // Asegurar que el objeto en memoria tenga un array válido antes de clonar
             if (!envelope.head.trace_path) {
                 envelope.head.trace_path = [];
             }
@@ -100,40 +99,13 @@ export default class RouterAddon {
                 if (targetIdentifier === sourceIdentifier) continue;
 
                 // B. Evasión de Tormentas de Difusión (Broadcast Storms):
-                // CORRECCIÓN 2: Solo bloqueamos si el IDENTIFICADOR EXACTO (Plataforma + ID de Canal) ya procesó el mensaje.
+                // Solo bloqueamos si el IDENTIFICADOR EXACTO (Plataforma + ID de Canal) ya procesó el mensaje.
                 if (tracePath.includes(targetIdentifier)) {
                     if (this.context.logger) {
                         this.context.logger.debug(`[${this.platformName}] Bucle evadido hacia ${targetIdentifier} gracias al Trace Path.`);
                     }
                     continue;
                 }
-
-                // --- MEJORA: Verificación de salud del adaptador destino ---
-                // Recuperar la instancia del adaptador desde el Microkernel / PluginManager
-                const adapter = this.context.pluginManager?.getPlugin(target.platform);
-                if (!adapter) {
-                    if (this.context.logger) {
-                        this.context.logger.debug(`[${this.platformName}] Adaptador no encontrado para plataforma ${target.platform} – ruta omitida.`);
-                    }
-                    continue;
-                }
-
-                try {
-                    const healthReport = await adapter.health();
-                    // Validamos que el adaptador esté realmente activo/conectado
-                    if (healthReport.status !== 'active' && healthReport.status !== 'connected') {
-                        if (this.context.logger) {
-                            this.context.logger.debug(`[${this.platformName}] Ruta omitida hacia [${target.platform}] - Adaptador en estado: ${healthReport.status}`);
-                        }
-                        continue; // Saltamos este destino, no encolamos nada
-                    }
-                } catch (healthError) {
-                    if (this.context.logger) {
-                        this.context.logger.warn(`[${this.platformName}] Fallo al verificar salud del adaptador [${target.platform}]: ${healthError.message}`);
-                    }
-                    continue;
-                }
-                // --- FIN MEJORA ---
 
                 // 4. Clonar el UMF aislando la carga útil para este destino específico
                 const outboxEnvelope = JSON.parse(JSON.stringify(envelope));
@@ -144,7 +116,7 @@ export default class RouterAddon {
                     channelId: target.native_id
                 };
 
-                // Actualizar el historial de saltos (Trace Path) – ahora 100% seguro porque existe
+                // Actualizar el historial de saltos (Trace Path)
                 outboxEnvelope.head.trace_path.push(targetIdentifier);
 
                 // Despachar a la cola BullMQ correspondiente a la plataforma destino
