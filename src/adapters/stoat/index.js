@@ -1,7 +1,7 @@
 // src/adapters/stoat/index.js
 import { Client } from 'stoat.js';
 import { BaseAdapter } from '../base.js';
-import { createEnvelope, UMF_TYPES } from '../../core/utils/umf.js';
+import { createEnvelope, UMF_TYPES, getPlatformAlias } from '../../core/utils/umf.js';
 
 /**
  * Adaptador modular para la plataforma Stoat (basada en Revolt).
@@ -154,6 +154,7 @@ export default class StoatAdapter extends BaseAdapter {
         // SOLUCIÓN EMOJIS: Extraer emojis personalizados de Revolt (:[ULID]:)
         const revoltEmojiRegex = /:([A-Z0-9]{26}):/g;
         let match;
+        let cleanText = msg.content || '';
         while ((match = revoltEmojiRegex.exec(msg.content)) !== null) {
             attachments.push({
                 id: match[1],
@@ -162,8 +163,21 @@ export default class StoatAdapter extends BaseAdapter {
                 mimeType: 'image/png',
                 name: `emoji-${match[1]}.png`
             });
+            // Eliminar la marca del texto
+            cleanText = cleanText.replace(match[0], '').trim();
         }
-        const cleanText = msg.content?.replace(/:[A-Z0-9]{26}:/g, '').trim();
+
+        // SOLUCIÓN MENCIONES: Reemplazar menciones de usuario en formato <@ULID> por un placeholder legible
+        const mentionRegex = /<@([A-Z0-9]{26})>/g;
+        while ((match = mentionRegex.exec(msg.content)) !== null) {
+            const userId = match[1];
+            const lastFour = userId.slice(-4);
+            // Reemplazar la mención en el texto con un placeholder
+            cleanText = cleanText.replace(match[0], `@usuario_${lastFour}`);
+        }
+
+        // Si hay un arreglo de menciones en el mensaje, podríamos intentar resolver nombres reales,
+        // pero como fallback usamos el placeholder.
 
         const envelope = createEnvelope({
             type: (attachments.length > 0 && !cleanText) ? UMF_TYPES.FILE : UMF_TYPES.TEXT,
@@ -209,7 +223,9 @@ export default class StoatAdapter extends BaseAdapter {
                 throw new Error(`Canal destino no está listo o no existe: ${destChannelId}`);
             }
 
-            const senderName = `${envelope.head.source.username} (${envelope.head.source.platform})`;
+            // SOLUCIÓN: Usar abreviatura de plataforma
+            const alias = getPlatformAlias(envelope.head.source.platform);
+            const senderName = `${envelope.head.source.username} (${alias})`;
             let avatarUrl = envelope.head.source.avatar;
 
             // Construir contenido base

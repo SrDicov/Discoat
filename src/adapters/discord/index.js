@@ -1,7 +1,7 @@
 // src/adapters/discord/index.js
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import { BaseAdapter } from '../base.js';
-import { createEnvelope, UMF_TYPES } from '../../core/utils/umf.js';
+import { createEnvelope, UMF_TYPES, getPlatformAlias } from '../../core/utils/umf.js';
 
 /**
  * Adaptador modular para Discord.
@@ -165,10 +165,12 @@ export default class DiscordAdapter extends BaseAdapter {
             }
         }
 
-        // SOLUCIÓN EMOJIS: Convertir Emojis Custom de Discord a Stickers UMF
+        // SOLUCIÓN: Usar cleanContent para resolver menciones automáticamente
+        let cleanText = msg.cleanContent || '';
+
+        // SOLUCIÓN EMOJIS: Convertir Emojis Custom de Discord a Stickers UMF y limpiar texto
         const customEmojiRegex = /<a?:([a-zA-Z0-9_]+):(\d+)>/g;
         let match;
-        let cleanText = msg.content || '';
         while ((match = customEmojiRegex.exec(msg.content)) !== null) {
             const isAnimated = match[0].startsWith('<a:'); // Emojis animados (Nitro)
             attachments.push({
@@ -178,7 +180,7 @@ export default class DiscordAdapter extends BaseAdapter {
                 mimeType: `image/${isAnimated ? 'gif' : 'png'}`,
                 name: `${match[1]}.${isAnimated ? 'gif' : 'png'}`
             });
-            // Eliminar la marca del texto
+            // Eliminar la marca del texto (ya se ha usado cleanContent, pero por si acaso)
             cleanText = cleanText.replace(match[0], '').trim();
         }
 
@@ -254,8 +256,9 @@ export default class DiscordAdapter extends BaseAdapter {
                 return;
             }
 
-            // Identidad original abstraída en UMF
-            let senderName = `${envelope.head.source.username} (${envelope.head.source.platform})`;
+            // SOLUCIÓN: Usar abreviatura de plataforma para el nombre del remitente
+            const alias = getPlatformAlias(envelope.head.source.platform);
+            let senderName = `${envelope.head.source.username} (${alias})`;
 
             // SOLUCIÓN 1: Sanitización de palabras prohibidas por Discord (Filtro Anti-Phishing)
             senderName = senderName.replace(/discord/gi, 'DC').replace(/clyde/gi, 'Cld').substring(0, 80);

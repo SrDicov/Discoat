@@ -3,10 +3,10 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
     makeWASocket,
-    useMultiFileAuthState,
     DisconnectReason,
     downloadMediaMessage,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    useMultiFileAuthState          // <-- Importado para el fallback local
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
@@ -27,72 +27,160 @@ export default class WhatsAppAdapter extends BaseAdapter {
         if (!fs.existsSync(this.tempDir)) fs.mkdirSync(this.tempDir, { recursive: true });
     }
 
+    /**
+     * Método de inicio modificado: si S3 no está disponible, usa almacenamiento local (modo degradado).
+     */
     async start() {
         this.logger.info(`[${this.platformName}] Levantando proceso de Baileys...`);
-        await this._connectWA();
+
+        const storageService = this.context.storage;
+        let authState, saveCredsFn;
+
+        // 1. Decidir método de autenticación según disponibilidad de S3
+        if (!storageService || !storageService.isReady) {
+            // MODO DEGRADADO (desarrollo local)
+            this.logger.warn(`[${this.platformName}] ⚠️ [MODO DEGRADADO] S3 no detectado. Usando almacenamiento local. NO APTO PARA PRODUCCIÓN EN CLÚSTER.`);
+            const authPath = path.resolve(process.cwd(), 'data', 'auth_whatsapp');
+            const { state, saveCreds } = await useMultiFileAuthState(authPath);
+            authState = state;
+            saveCredsFn = saveCreds;
+        } else {
+            // MODO PRODUCCIÓN (autenticación distribuida en S3)
+            this.logger.info(`[${this.platformName}] Inicializando sesión distribuida en bucket S3...`);
+            const { state, saveCreds } = await this._useDistributedAuthState(storageService, 'whatsapp_session');
+            authState = state;
+            saveCredsFn = saveCreds;
+        }
+
+        // 2. Obtener última versión de la API de WhatsApp (opcional, mejora la estabilidad)
+        const { version, isLatest } = await fetchLatestBaileysVersion();
+        this.logger.info(`[${this.platformName}] Conectando a WA v${version.join('.')} (Última: ${isLatest})`);
+
+        // 3. Crear el socket con la configuración obtenida
+        this.sock = makeWASocket({
+            version,
+            auth: authState,
+            logger: this.baileysLogger,           // Silenciamos logs internos de Baileys
+            browser: ['Discoat Bridge', 'Chrome', '2.0.0'],
+            printQRInTerminal: false,              // Nosotros mostramos el QR manualmente
+            syncFullHistory: false
+        });
+
+        // 4. Guardar actualizaciones de credenciales
+        this.sock.ev.on('creds.update', saveCredsFn);
+
+        // 5. Manejar eventos de conexión (incluye reconexión y QR)
+        this.sock.ev.on('connection.update', (update) => {
+            const { connection, lastDisconnect, qr } = update;
+
+            if (qr) {
+                this.logger.info(`[${this.platformName}] 📱 Escanea este código QR para conectar WhatsApp:`);
+                qrcode.generate(qr, { small: true });
+            }
+
+            if (connection === 'close') {
+                this.isConnecting = false;
+
+                const error = lastDisconnect?.error;
+                const statusCode = error?.output?.statusCode || error?.output?.payload?.statusCode;
+                const reason = error?.message || 'Desconocida';
+
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+                this.logger.warn(`[${this.platformName}] Socket cerrado. Código: ${statusCode}, Razón: ${reason}. ¿Reconectar? ${shouldReconnect}`);
+
+                if (shouldReconnect) {
+                    setTimeout(() => this.start(), 4000);
+                } else {
+                    this.logger.error(`[${this.platformName}] Sesión cerrada permanentemente. Verifica credenciales y reinicia.`);
+                }
+            } else if (connection === 'open') {
+                this.isConnecting = false;
+                this.logger.info(`[${this.platformName}] Conectado exitosamente.`);
+            }
+        });
+
+        // 6. Registrar manejadores de mensajes entrantes
+        this._registerEvents();
     }
 
-    async _connectWA() {
-        if (this.isConnecting) return;
-        this.isConnecting = true;
+    /**
+     * Almacenamiento distribuido en S3 (sin cambios).
+     */
+    async _useDistributedAuthState(storage, sessionFolder) {
+        const writeData = async (data, file) => {
+            await storage.uploadFile(
+                Buffer.from(JSON.stringify(data, null, 2)),
+                                     `${sessionFolder}/${file}.json`,
+                                     'application/json'
+            );
+        };
 
-        try {
-            const authFolder = path.join(process.cwd(), 'auth_baileys');
-            const { state, saveCreds } = await useMultiFileAuthState(authFolder);
+        const readData = async (file) => {
+            try {
+                const buffer = await storage.downloadFile(`${sessionFolder}/${file}.json`);
+                return JSON.parse(buffer.toString('utf-8'));
+            } catch {
+                return null;
+            }
+        };
 
-            // SOLUCIÓN 1: Forzar la última versión de la API de WhatsApp
-            const { version, isLatest } = await fetchLatestBaileysVersion();
-            this.logger.info(`[${this.platformName}] Conectando a WA v${version.join('.')} (Última: ${isLatest})`);
+        const removeData = async (file) => {
+            await storage.deleteFile(`${sessionFolder}/${file}.json`);
+        };
 
-            // SOLUCIÓN 2: Mostrar errores fatales de Baileys en lugar de silencio total
-            const waLogger = pino({ level: 'error' });
+        const creds = (await readData('creds')) || {
+            noiseKey: { private: null, public: null },
+            signedIdentityKey: { private: null, public: null },
+            signedPreKey: { keyPair: { private: null, public: null }, signature: null, keyId: null },
+            registrationId: 0,
+            advSecretKey: null,
+            nextPreKeyId: 1,
+            firstUnuploadedPreKeyId: 1,
+            accountSyncCounter: 0,
+            accountSettings: { unarchiveChats: false },
+            deviceId: '',
+            phoneId: '',
+            identityId: '',
+            registered: false,
+            backupToken: '',
+            latestExactMessageId: '',
+            latestMessageId: '',
+            routingInfo: null,
+        };
 
-            this.sock = makeWASocket({
-                version,
-                auth: state,
-                logger: waLogger,
-                browser: ['Discoat Bridge', 'Chrome', '2.0.0'],
-                printQRInTerminal: false
-            });
-
-            this.sock.ev.on('creds.update', saveCreds);
-
-            this.sock.ev.on('connection.update', (update) => {
-                const { connection, lastDisconnect, qr } = update;
-
-                if (qr) {
-                    this.logger.info(`[${this.platformName}] 📱 Escanea este código QR para conectar WhatsApp:`);
-                    qrcode.generate(qr, { small: true });
-                }
-
-                if (connection === 'close') {
-                    this.isConnecting = false;
-
-                    // SOLUCIÓN 3: Telemetría exacta del cierre
-                    const error = lastDisconnect?.error;
-                    const statusCode = error?.output?.statusCode || error?.output?.payload?.statusCode;
-                    const reason = error?.message || 'Desconocida';
-
-                    const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-
-                    this.logger.warn(`[${this.platformName}] Socket cerrado. Código: ${statusCode}, Razón: ${reason}. ¿Reconectar? ${shouldReconnect}`);
-
-                    if (shouldReconnect) {
-                        setTimeout(() => this._connectWA(), 4000);
-                    } else {
-                        this.logger.error(`[${this.platformName}] Sesión cerrada permanentemente. Borra auth_baileys y reinicia.`);
+        return {
+            state: {
+                creds,
+                keys: {
+                    get: async (type, ids) => {
+                        const data = {};
+                        await Promise.all(
+                            ids.map(async id => {
+                                let value = await readData(`${type}-${id}`);
+                                if (type === 'app-state-sync-key' && value && value.keyData) {
+                                    value = { ...value, keyData: Buffer.from(value.keyData, 'base64') };
+                                }
+                                data[id] = value;
+                            })
+                        );
+                        return data;
+                    },
+                    set: async (data) => {
+                        const tasks = [];
+                        for (const category in data) {
+                            for (const id in data[category]) {
+                                const value = data[category][id];
+                                const file = `${category}-${id}`;
+                                tasks.push(value ? writeData(value, file) : removeData(file));
+                            }
+                        }
+                        await Promise.all(tasks);
                     }
-                } else if (connection === 'open') {
-                    this.isConnecting = false;
-                    this.logger.info(`[${this.platformName}] Conectado exitosamente.`);
                 }
-            });
-
-            this._registerEvents();
-        } catch (error) {
-            this.isConnecting = false;
-            this.logger.error(`[${this.platformName}] Falla crítica al inicializar Baileys: ${error.message}`);
-        }
+            },
+            saveCreds: () => writeData(creds, 'creds')
+        };
     }
 
     _registerEvents() {
@@ -116,12 +204,26 @@ export default class WhatsAppAdapter extends BaseAdapter {
         const authorId = msg.key.participant || msg.key.remoteJid;
         const authorName = msg.pushName || authorId.split('@')[0];
 
+        let avatarUrl = null;
+        try {
+            avatarUrl = await this.sock.profilePictureUrl(authorId, 'image');
+        } catch (error) {
+            this.logger.debug(`[${this.platformName}] No se pudo obtener avatar para ${authorId}: ${error.message}`);
+        }
+
         const messageType = Object.keys(msg.message)[0];
         const msgContent = msg.message[messageType];
 
         let text = msg.message.conversation ||
         msg.message.extendedTextMessage?.text ||
         msgContent?.caption || '';
+
+        const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+        mentionedJids.forEach(jid => {
+            const phone = jid.split('@')[0];
+            const regex = new RegExp(`@${phone}`, 'g');
+            text = text.replace(regex, `@Usuario_${phone.slice(-4)}`);
+        });
 
         const attachments = [];
 
@@ -181,7 +283,7 @@ export default class WhatsAppAdapter extends BaseAdapter {
                 channelId: chanId,
                 userId: authorId,
                 username: authorName,
-                avatar: null
+                avatar: avatarUrl
             },
             body: { text, attachments },
             replyTo: replyData,
@@ -193,9 +295,11 @@ export default class WhatsAppAdapter extends BaseAdapter {
     }
 
     async processEgress(envelope) {
-        return this.breaker.fire(async () => {
-            if (!this.sock) throw new Error('Socket de WhatsApp no inicializado.');
+        if (!this.sock) {
+            throw new Error('Socket de WhatsApp no inicializado. El adaptador se encuentra inoperativo o en estado de fallo severo.');
+        }
 
+        return this.breaker.fire(async () => {
             const destChannelId = envelope.head.dest?.channelId;
             if (!destChannelId) throw new Error('Destino no especificado en el envelope UMF.');
 

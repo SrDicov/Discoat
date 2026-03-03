@@ -2,7 +2,7 @@
 import { Bot, InputFile } from 'grammy';
 import { run } from '@grammyjs/runner';
 import { BaseAdapter } from '../base.js';
-import { createEnvelope, UMF_TYPES } from '../../core/utils/umf.js';
+import { createEnvelope, UMF_TYPES, getPlatformAlias } from '../../core/utils/umf.js';
 
 /**
  * Adaptador modular para Telegram.
@@ -261,8 +261,9 @@ export default class TelegramAdapter extends BaseAdapter {
             const destChannelId = envelope.head.dest?.channelId;
             if (!destChannelId) throw new Error('Destino no especificado en el envelope UMF.');
 
-            // Identidad original preservada
-            const senderName = `${envelope.head.source.username} (${envelope.head.source.platform})`;
+            // SOLUCIÓN: Usar abreviatura de plataforma para el nombre del remitente
+            const alias = getPlatformAlias(envelope.head.source.platform);
+            const senderName = `${envelope.head.source.username} (${alias})`;
 
             // Extraer texto base y sanitizar para evitar errores de parseo en Telegram
             let content = envelope.body.text || '';

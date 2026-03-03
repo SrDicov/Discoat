@@ -145,3 +145,19 @@ export function degradeToText(envelope) {
 
     return text.trim();
 }
+
+/**
+ * Diccionario de Abreviaturas Topológicas.
+ * Estandariza la firma visual en las plataformas de destino.
+ */
+export const PLATFORM_CODES = {
+    'discord': 'DC',
+    'telegram': 'TG',
+    'stoat': 'ST',
+    'whatsapp': 'WA'
+};
+
+export function getPlatformAlias(platformStr) {
+    const key = (platformStr || '').toLowerCase();
+    return PLATFORM_CODES[key] || platformStr.toUpperCase();
+}

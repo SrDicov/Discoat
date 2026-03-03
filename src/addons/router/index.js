@@ -46,7 +46,8 @@ export default class RouterAddon {
     }
 
     /**
-     * Lógica central de distribución en abanico (Fan-out) basada en la topología de la BD.
+     * Lógica central de distribución en abanico (Fan-out) basada en la topología de la BD,
+     * ahora con verificación de salud de los adaptadores destino.
      */
     async _routeMessage(envelope) {
         try {
@@ -106,6 +107,33 @@ export default class RouterAddon {
                     }
                     continue;
                 }
+
+                // --- MEJORA: Verificación de salud del adaptador destino ---
+                // Recuperar la instancia del adaptador desde el Microkernel / PluginManager
+                const adapter = this.context.pluginManager?.getPlugin(target.platform);
+                if (!adapter) {
+                    if (this.context.logger) {
+                        this.context.logger.debug(`[${this.platformName}] Adaptador no encontrado para plataforma ${target.platform} – ruta omitida.`);
+                    }
+                    continue;
+                }
+
+                try {
+                    const healthReport = await adapter.health();
+                    // Validamos que el adaptador esté realmente activo/conectado
+                    if (healthReport.status !== 'active' && healthReport.status !== 'connected') {
+                        if (this.context.logger) {
+                            this.context.logger.debug(`[${this.platformName}] Ruta omitida hacia [${target.platform}] - Adaptador en estado: ${healthReport.status}`);
+                        }
+                        continue; // Saltamos este destino, no encolamos nada
+                    }
+                } catch (healthError) {
+                    if (this.context.logger) {
+                        this.context.logger.warn(`[${this.platformName}] Fallo al verificar salud del adaptador [${target.platform}]: ${healthError.message}`);
+                    }
+                    continue;
+                }
+                // --- FIN MEJORA ---
 
                 // 4. Clonar el UMF aislando la carga útil para este destino específico
                 const outboxEnvelope = JSON.parse(JSON.stringify(envelope));
