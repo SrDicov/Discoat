@@ -182,6 +182,36 @@ export default class DiscordAdapter extends BaseAdapter {
             cleanText = cleanText.replace(match[0], '').trim();
         }
 
+        // SOLUCIÓN DISCORD: Hidratar el mensaje padre si es una respuesta
+        let replyData = null;
+        if (msg.reference && msg.reference.messageId) {
+            try {
+                // Hacer fetch al canal para obtener el objeto completo del mensaje padre
+                const parentMsg = await msg.channel.messages.fetch(msg.reference.messageId);
+                const parentAtts = [];
+
+                if (parentMsg.attachments.size > 0) {
+                    parentMsg.attachments.forEach(att => {
+                        parentAtts.push({
+                            id: att.id,
+                            url: att.url,
+                            type: att.contentType?.includes('audio') ? UMF_TYPES.AUDIO : UMF_TYPES.FILE,
+                                        mimeType: att.contentType,
+                                        name: att.name
+                        });
+                    });
+                }
+
+                replyData = {
+                    parentId: parentMsg.id,
+                    parentText: parentMsg.content,
+                    parentAttachments: parentAtts
+                };
+            } catch (e) {
+                this.context.logger.warn(`[discord] Fallo al hacer fetch del mensaje citado.`);
+            }
+        }
+
         // Estructuración Canónica (UMF Envelope) con el texto limpio
         const envelope = createEnvelope({
             type: attachments.length > 0 && !cleanText ? UMF_TYPES.FILE : UMF_TYPES.TEXT,
@@ -196,10 +226,10 @@ export default class DiscordAdapter extends BaseAdapter {
                 text: cleanText,
                 attachments
             },
-            replyTo: msg.reference ? { parentId: msg.reference.messageId } : null,
+            replyTo: replyData,
             correlationId: this.context.logger.getCorrelationId(),
-            // CORRECCIÓN: Iniciar la matriz topológica de rastreo para evitar tormentas de difusión
-            trace_path: [`${this.platformName}:${msg.channel.id}`]
+                                        // CORRECCIÓN: Iniciar la matriz topológica de rastreo para evitar tormentas de difusión
+                                        trace_path: [`${this.platformName}:${msg.channel.id}`]
         });
 
         // Emitir al enrutador central
@@ -344,4 +374,4 @@ export default class DiscordAdapter extends BaseAdapter {
             return null;
         }
     }
-}
+     }

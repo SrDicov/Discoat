@@ -128,20 +128,16 @@ export default class StoatAdapter extends BaseAdapter {
      * @private
      */
     async _handleIngress(msg) {
-        // Prevención estricta de Bucles: Ignorar mensajes del propio bot, masquerade o del sistema
+        // Prevención estricta
         if (msg.author?.bot || msg.masquerade || msg.system) return;
 
         // SOLUCIÓN: Tolerancia a nombres de propiedades (stoat.js usa camelCase)
         const chanId = msg.channelId || msg.channel_id;
         const authorId = msg.authorId || msg.author_id;
-        if (!chanId) {
-            this.logger.warn(`[${this.platformName}] No se pudo resolver el channelId del mensaje nativo. Mensaje ignorado.`);
-            return;
-        }
+        if (!chanId) return;
 
         const attachments = [];
 
-        // Mapeo multimedia usando el proxy Autumn sin descargar buffers en memoria principal
         if (msg.attachments?.length > 0) {
             for (const att of msg.attachments) {
                 const fileUrl = `${this.autumnBaseUrl}/attachments/${att._id}/${encodeURIComponent(att.filename)}`;
@@ -150,8 +146,7 @@ export default class StoatAdapter extends BaseAdapter {
                     url: fileUrl,
                     type: UMF_TYPES.FILE,
                     mimeType: att.metadata?.type || 'application/octet-stream',
-                    name: att.filename,
-                    size: att.size || 0
+                    name: att.filename
                 });
             }
         }
@@ -159,7 +154,6 @@ export default class StoatAdapter extends BaseAdapter {
         // SOLUCIÓN EMOJIS: Extraer emojis personalizados de Revolt (:[ULID]:)
         const revoltEmojiRegex = /:([A-Z0-9]{26}):/g;
         let match;
-        let cleanText = msg.content || '';
         while ((match = revoltEmojiRegex.exec(msg.content)) !== null) {
             attachments.push({
                 id: match[1],
@@ -168,37 +162,25 @@ export default class StoatAdapter extends BaseAdapter {
                 mimeType: 'image/png',
                 name: `emoji-${match[1]}.png`
             });
-            // Eliminar la marca del texto
-            cleanText = cleanText.replace(match[0], '').trim();
         }
+        const cleanText = msg.content?.replace(/:[A-Z0-9]{26}:/g, '').trim();
 
-        // Resolución del avatar (Fallback a Autumn CDN manual)
-        let avatarUrl = null;
-        if (msg.author?.avatar) {
-            avatarUrl = `${this.autumnBaseUrl}/avatars/${msg.author.avatar._id}`;
-        }
-
-        // Estructuración Canónica con trace_path
         const envelope = createEnvelope({
             type: (attachments.length > 0 && !cleanText) ? UMF_TYPES.FILE : UMF_TYPES.TEXT,
-            source: {
-                platform: this.platformName,
-                channelId: chanId,
-                userId: authorId,
-                username: msg.author?.username || 'Usuario Stoat',
-                avatar: avatarUrl
-            },
-            body: {
-                text: cleanText || '',
-                attachments
-            },
-            replyTo: (msg.reply_ids && msg.reply_ids.length > 0) ? { parentId: msg.reply_ids[0] } : null,
-            correlationId: this.context.logger.getCorrelationId(),
-            // CRÍTICO: Iniciar matriz topológica para evitar tormentas de difusión
-            trace_path: [`${this.platformName}:${chanId}`]
+                                        source: {
+                                            platform: this.platformName,
+                                            channelId: chanId,
+                                            userId: authorId,
+                                            username: msg.author?.username || 'Unknown',
+                                            avatar: msg.author?.avatar ? `${this.autumnBaseUrl}/avatars/${msg.author.avatar._id}` : null
+                                        },
+                                        body: { text: cleanText || '', attachments },
+                                        replyTo: (msg.reply_ids && msg.reply_ids.length > 0) ? { parentId: msg.reply_ids[0] } : null,
+                                        correlationId: this.context.logger.getCorrelationId(),
+                                        // RECUPERACIÓN CRÍTICA: Horizonte Dividido
+                                        trace_path: [`${this.platformName}:${chanId}`]
         });
 
-        // Emitir al bus para que el Router se encargue
         this.emitIngress(envelope);
     }
 

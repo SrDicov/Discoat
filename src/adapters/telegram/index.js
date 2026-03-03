@@ -197,21 +197,51 @@ export default class TelegramAdapter extends BaseAdapter {
             this.context.logger.debug(`[${this.platformName}] No se pudo resolver el avatar de ${ctx.from.username || ctx.from.id}`);
         }
 
+        // SOLUCIÓN TELEGRAM: Hidratar el mensaje padre si es una respuesta
+        let replyData = null;
+        if (msg.reply_to_message) {
+            const parentMsg = msg.reply_to_message;
+            const parentAtts = [];
+
+            // Si el mensaje citado tiene multimedia, extraer la URL al vuelo
+            const media = parentMsg.voice || parentMsg.audio || parentMsg.video || parentMsg.document;
+            if (media) {
+                try {
+                    const file = await ctx.api.getFile(media.file_id);
+                    parentAtts.push({
+                        id: media.file_id,
+                        url: `https://api.telegram.org/file/bot${this.bot.token}/${file.file_path}`,
+                        type: parentMsg.voice || parentMsg.audio ? UMF_TYPES.AUDIO : UMF_TYPES.FILE,
+                        mimeType: media.mime_type || 'audio/ogg',
+                        name: media.file_name || 'voice_note.ogg'
+                    });
+                } catch (e) {
+                    this.context.logger.warn(`[telegram] Fallo al extraer medio del quote.`);
+                }
+            }
+
+            replyData = {
+                parentId: parentMsg.message_id,
+                parentText: parentMsg.text || parentMsg.caption || '',
+                parentAttachments: parentAtts
+            };
+        }
+
         // Empaquetado Estructural UMF
         const envelope = createEnvelope({
             type: mainType,
             source: {
                 platform: this.platformName,
                 channelId: String(ctx.chat.id),
-                userId: String(ctx.from.id),
-                username: ctx.from.username || ctx.from.first_name || 'Desconocido',
-                avatar: avatarUrl
+                                        userId: String(ctx.from.id),
+                                        username: ctx.from.username || ctx.from.first_name || 'Desconocido',
+                                        avatar: avatarUrl
             },
             body: {
                 text: msg.text || msg.caption || '',
                 attachments
             },
-            replyTo: msg.reply_to_message ? { parentId: String(msg.reply_to_message.message_id) } : null,
+            replyTo: replyData,
             correlationId: this.context.logger.getCorrelationId()
         });
 
@@ -234,8 +264,20 @@ export default class TelegramAdapter extends BaseAdapter {
             // Identidad original preservada
             const senderName = `${envelope.head.source.username} (${envelope.head.source.platform})`;
 
-            // Construcción del plano visual
-            let caption = `<b>${senderName}</b>:\n${envelope.body.text || ''}`.trim();
+            // Extraer texto base y sanitizar para evitar errores de parseo en Telegram
+            let content = envelope.body.text || '';
+
+            // SOLUCIÓN: Sanitizar sintaxis propietaria de Discord para no romper el HTML de Telegram
+            // Convierte <@ID>, <#ID>, <@&ID> en formatos legibles
+            content = content
+            .replace(/<@!?(\d+)>/g, '`@$1`')   // Menciones de Usuario de Discord
+            .replace(/<#(\d+)>/g, '`#$1`')     // Menciones de Canal de Discord
+            .replace(/<@&(\d+)>/g, '`@&$1`')   // Menciones de Rol de Discord
+            .replace(/</g, '&lt;')              // Escapar < restantes
+            .replace(/>/g, '&gt;');              // Escapar > restantes
+
+            // Construcción del plano visual con el texto sanitizado
+            let caption = `<b>${senderName}</b>:\n${content}`.trim();
 
             // Degradación Elegante por Restricción de Dominio:
             // Los adjuntos en Telegram no permiten leyendas superiores a 1024 caracteres
@@ -284,4 +326,4 @@ export default class TelegramAdapter extends BaseAdapter {
             }
         });
     }
-}
+     }

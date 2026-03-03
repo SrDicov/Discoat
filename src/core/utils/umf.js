@@ -52,7 +52,12 @@ export function createEnvelope({ type = UMF_TYPES.TEXT, source, body, attachment
                 username: source.username || 'Unknown',
                 avatar: source.avatar || null
             },
-            replyTo: replyTo ? { parentId: replyTo.parentId, parentText: replyTo.parentText } : null,
+            replyTo: replyTo ? {
+                parentId: replyTo.parentId,
+                parentText: replyTo.parentText || '',
+                // SOLUCIÓN: Preservar los adjuntos del mensaje original
+                parentAttachments: (replyTo.parentAttachments || []).map(_sanitizeAttachment)
+            } : null,
             // Matriz topológica (Trace Path): Implementación de Horizonte Dividido (Split Horizon)
             // Registra la plataforma origen para prevenir Tormentas de Difusión y Bucles de Enrutamiento.
             trace_path: [platform]
