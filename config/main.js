@@ -8,8 +8,6 @@ const envSchema = z.object({
                            NODE_ID: z.string().default('core-01'),
 }).passthrough();
 
-// config/main.js
-
 export default {
     system: {
         env: process.env.NODE_ENV || "production",
@@ -36,6 +34,12 @@ export default {
             discord: process.env.DISCORD_TOKEN,
             telegram: process.env.TELEGRAM_TOKEN,
             stoat: process.env.STOAT_TOKEN,
+            // Telegram Userbot (MTProto)
+            telegramUserbot: {
+                apiId: parseInt(process.env.TELEGRAM_USERBOT_API_ID, 10) || undefined,
+                apiHash: process.env.TELEGRAM_USERBOT_API_HASH,
+                sessionString: process.env.TELEGRAM_USERBOT_SESSION
+            },
             signal: {
                 phone: process.env.SIGNAL_PHONE,
                 mode: "json-rpc"
@@ -46,6 +50,15 @@ export default {
     redis: {
         enabled: true,
         url: process.env.REDIS_URL || 'redis://localhost:6379'
+    },
+    // Configuración de almacenamiento S3 (para sesiones distribuidas)
+    s3: {
+        endpoint: process.env.S3_ENDPOINT,
+        bucket: process.env.S3_BUCKET,
+        region: process.env.S3_REGION,
+        accessKey: process.env.S3_ACCESS_KEY,
+        secretKey: process.env.S3_SECRET_KEY,
+        forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true'
     },
     tuning: {
         max_listeners: 100,

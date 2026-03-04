@@ -251,10 +251,10 @@ export default class DiscordAdapter extends BaseAdapter {
                 // Fallback a la foto por defecto oficial de Discord
                 avatarUrl = 'https://cdn.discordapp.com/embed/avatars/0.png';
             }
-            // 2. Escudo Stoat/Revolt: Transcodificación de WebP a PNG con optimización y bypass de validación
+            // 2. Escudo Stoat/Revolt: Transcodificación de WebP a PNG con optimización
             else if (avatarUrl.includes('autumn.revolt.chat')) {
                 const encodedUrl = encodeURIComponent(avatarUrl);
-                avatarUrl = `https://wsrv.nl/?url=${encodedUrl}&output=png&w=128&h=128&fit=cover&filename=avatar.png`;
+                avatarUrl = `https://wsrv.nl/?url=${encodedUrl}&output=png&w=256&h=256&fit=cover&dummy=.png`;
             }
             // NOTA: WhatsApp y Telegram no se tocan. Pasan directos porque Discord los lee nativamente.
 

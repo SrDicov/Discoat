@@ -132,6 +132,19 @@ export default class StoatAdapter extends BaseAdapter {
             cleanText = cleanText.replace(new RegExp(`<@${userId}>`, 'g'), `@${username}`);
         }
 
+        // CORRECCIÓN: Extracción robusta del avatar sin sufijos artificiales
+        let finalAvatarUrl = null;
+        if (msg.author?.avatar) {
+            const avatarId = msg.author.avatar.id || msg.author.avatar._id;
+            if (avatarId) {
+                if (typeof msg.author.avatar.createFileURL === 'function') {
+                    finalAvatarUrl = msg.author.avatar.createFileURL();
+                } else {
+                    finalAvatarUrl = `${this.autumnBaseUrl}/avatars/${avatarId}`;
+                }
+            }
+        }
+
         const envelope = createEnvelope({
             type: (attachments.length > 0 && !cleanText) ? UMF_TYPES.FILE : UMF_TYPES.TEXT,
                                         source: {
@@ -139,9 +152,7 @@ export default class StoatAdapter extends BaseAdapter {
                                             channelId: chanId,
                                             userId: authorId,
                                             username: msg.author?.username || 'Unknown',
-                                            // Engaño a la CDN: Añadimos "/avatar.png" al final de la URL de Revolt.
-                                            // Autumn ignora el nombre, pero Discord lo lee y aprueba la imagen.
-                                            avatar: msg.author?.avatar ? `${this.autumnBaseUrl}/avatars/${msg.author.avatar._id}/avatar.png` : null
+                                            avatar: finalAvatarUrl
                                         },
                                         body: { text: cleanText || '', attachments },
                                         replyTo: (msg.reply_ids && msg.reply_ids.length > 0) ? { parentId: msg.reply_ids[0] } : null,
